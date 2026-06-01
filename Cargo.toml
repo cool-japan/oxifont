@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/oxifont-core",
+    "crates/oxifont-parser",
+    "crates/oxifont-discovery",
+    "crates/oxifont-adapter-pure",
+    "crates/oxifont-adapter-native",
+    "crates/oxifont-db",
+    "crates/oxifont",
+    "crates/oxifont-webfont",
+    "crates/oxifont-subset",
+    "crates/oxifont-bundled",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["COOLJAPAN OU (Team Kitasan)"]
+license = "Apache-2.0"
+repository = "https://github.com/cool-japan/oxifont"
+description = "OxiFont is the COOLJAPAN Pure Rust font discovery + font parsing layer for the oxi* ecosystem."
+
+[workspace.dependencies]
+oxifont-core        = { path = "crates/oxifont-core",        version = "0.1.0" }
+oxifont-parser      = { path = "crates/oxifont-parser",      version = "0.1.0" }
+oxifont-discovery   = { path = "crates/oxifont-discovery",   version = "0.1.0" }
+oxifont-adapter-pure = { path = "crates/oxifont-adapter-pure", version = "0.1.0" }
+oxifont-db          = { path = "crates/oxifont-db",          version = "0.1.0" }
+oxifont-webfont        = { path = "crates/oxifont-webfont",        version = "0.1.0" }
+oxifont-subset         = { path = "crates/oxifont-subset",         version = "0.1.0" }
+oxifont-adapter-native = { path = "crates/oxifont-adapter-native", version = "0.1.0" }
+oxifont-bundled        = { path = "crates/oxifont-bundled",        version = "0.1.0" }
+oxiarc-deflate         = { version = "0.3.2" }
+oxiarc-brotli          = { version = "0.3.2" }
+
+core-foundation = { version = "0.10.1" }
+core-text       = { version = "22.0.0" }
+core-graphics   = { version = "0.25.0" }
+# windows crate (not windows-sys) for DirectWrite — provides full COM bindings.
+# DirectWrite was removed from windows-sys after 0.42; the windows crate retains it.
+windows         = { version = "0.62", features = [
+    "Win32_Graphics_DirectWrite",
+    "Win32_Foundation",
+    "Win32_System_Com",
+] }
+
+ttf-parser   = { version = "0.25.1", default-features = false, features = ["std", "variable-fonts"] }
+smallvec     = { version = "1" }
+walkdir      = { version = "2.5.0" }
+rayon        = { version = "1.12.0" }
+dashmap      = { version = "6.2.1" }
+serde        = { version = "1.0.228", features = ["derive", "rc"] }
+serde_json   = { version = "1.0.150" }
+dirs         = { version = "6.0.0" }
+quick-xml    = { version = "0.40.1" }
+memmap2      = { version = "0.9.10" }
+oxicode      = { version = "0.2.3", features = ["serde"] }
+proptest     = { version = "1.11.0" }
+criterion    = { version = "0.8", default-features = false }

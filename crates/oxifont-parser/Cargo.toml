@@ -1,0 +1,22 @@
+[package]
+name = "oxifont-parser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Rust TTF/OTF/TTC font parser for OxiFont (ttf-parser wrapper)"
+keywords = ["font", "ttf", "opentype", "parser"]
+categories = ["text-processing", "parser-implementations"]
+
+[dependencies]
+oxifont-core = { workspace = true }
+ttf-parser   = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "parse_bench"
+harness = false

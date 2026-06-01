@@ -1,0 +1,23 @@
+[package]
+name = "oxifont-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Rust font trait surface and types"
+keywords = ["font", "typography", "traits"]
+categories = ["text-processing"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest  = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+std = []
+serde = ["dep:serde"]
+default = ["std"]

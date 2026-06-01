@@ -1,0 +1,6 @@
+FROM rust:slim
+WORKDIR /app
+COPY . .
+RUN cargo build --workspace && \
+    (cargo tree --workspace --edges normal | grep -E '(freetype-sys|fontconfig-sys|harfbuzz-sys| brotli v|flate2 v|miniz_oxide v|ring v)' && \
+     echo "FFI LEAK DETECTED" && exit 1 || echo "FFI AUDIT CLEAN")

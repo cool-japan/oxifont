@@ -1,0 +1,37 @@
+[package]
+name = "oxifont-webfont"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Rust WOFF1/WOFF2 decoder for OxiFont (oxiarc-deflate + oxiarc-brotli)"
+keywords = ["font", "woff", "woff2", "webfont", "pure-rust"]
+categories = ["text-processing", "encoding"]
+
+[features]
+default = []
+woff1 = ["dep:oxiarc-deflate"]
+woff2 = ["dep:oxiarc-brotli"]
+
+[dependencies]
+oxifont-parser = { workspace = true }
+oxiarc-deflate = { workspace = true, optional = true }
+oxiarc-brotli  = { workspace = true, optional = true }
+
+[dev-dependencies]
+oxifont-core = { workspace = true }
+oxiarc-deflate = { workspace = true }
+oxiarc-brotli  = { workspace = true }
+criterion      = { workspace = true }
+
+[[bench]]
+name = "woff2_decode"
+harness = false
+required-features = ["woff2"]
+
+[[bench]]
+name = "woff2_streaming"
+harness = false
+required-features = ["woff2"]

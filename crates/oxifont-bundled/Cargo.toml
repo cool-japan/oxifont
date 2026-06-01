@@ -1,0 +1,39 @@
+[package]
+name = "oxifont-bundled"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license = "Apache-2.0 AND OFL-1.1"
+repository.workspace = true
+description = "Bundled SIL-OFL-1.1 Noto font data for OxiFont (opt-in)"
+keywords = ["font", "noto", "bundled", "ofl", "typography"]
+categories = ["text-processing", "graphics"]
+
+[features]
+default = []
+bundled-noto        = []
+bundled-noto-serif  = ["bundled-noto"]
+bundled-noto-emoji  = ["bundled-noto"]
+bundled-noto-cjk    = ["bundled-noto-cjk-jp", "bundled-noto-cjk-kr", "bundled-noto-cjk-sc", "bundled-noto-cjk-tc"]
+bundled-noto-cjk-jp = ["bundled-noto"]
+bundled-noto-cjk-kr = ["bundled-noto"]
+bundled-noto-cjk-sc = ["bundled-noto"]
+bundled-noto-cjk-tc = ["bundled-noto"]
+compressed          = ["dep:oxiarc-deflate"]
+
+[dependencies]
+oxifont-core   = { workspace = true }
+oxifont-parser = { workspace = true }
+
+[dependencies.oxiarc-deflate]
+workspace = true
+optional = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "bundled_parse"
+harness = false
+required-features = ["bundled-noto"]

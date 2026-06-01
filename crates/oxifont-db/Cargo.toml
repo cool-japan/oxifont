@@ -1,0 +1,39 @@
+[package]
+name = "oxifont-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-memory indexed font database with CSS Level 4 hybrid query for OxiFont"
+keywords = ["font", "database", "css", "query", "typography"]
+categories = ["text-processing", "data-structures"]
+
+[dependencies]
+oxifont-core   = { workspace = true, features = ["serde"] }
+ttf-parser     = { workspace = true }
+smallvec       = { workspace = true }
+walkdir        = { workspace = true }
+serde          = { workspace = true }
+dirs           = { workspace = true }
+
+[dependencies.serde_json]
+workspace = true
+optional = true
+
+[dependencies.oxicode]
+workspace = true
+optional = true
+
+[features]
+default = []
+cache = ["dep:serde_json", "dep:oxicode"]
+
+[dev-dependencies]
+oxifont-core = { workspace = true }
+criterion    = { workspace = true, features = ["cargo_bench_support"] }
+
+[[bench]]
+name    = "match_best_bench"
+harness = false

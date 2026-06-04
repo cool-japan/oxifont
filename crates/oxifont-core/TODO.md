@@ -43,6 +43,6 @@ Shared trait surface and data types for the OxiFont ecosystem. Provides `FontFac
 - [x] Benchmark `FontQuery` matching in catalogs of 1000+ faces
 
 ## Integration
-- [ ] Ensure `FontFace::outline()` output is compatible with oxitext-raster path-based rasterization
+- [x] Ensure `FontFace::outline()` output is compatible with oxitext-raster path-based rasterization
 - [x] Align `VariationAxis` with oxifont-db's `VariableAxis` (currently duplicated types)
 - [x] Add `From<oxifont_db::FaceInfo>` impl for `oxifont_core::FaceInfo` to bridge the two face types

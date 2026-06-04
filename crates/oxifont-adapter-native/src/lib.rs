@@ -30,6 +30,13 @@ use oxifont_core as _;
 mod error;
 pub use error::NativeError;
 
+/// Shaper-integration bridge: native OS font fallback for complex script coverage.
+///
+/// Provides a cross-platform API for shaping engines to obtain raw font bytes for
+/// codepoints not covered by their primary font, using the OS-native font enumeration
+/// (CoreText on macOS, DirectWrite catalog on Windows, pure filesystem scan on Linux).
+pub mod shaper_bridge;
+
 #[cfg(target_os = "macos")]
 mod coretext;
 #[cfg(target_os = "macos")]
@@ -37,7 +44,10 @@ pub use coretext::NativeCatalog;
 #[cfg(target_os = "macos")]
 pub use coretext::NativeScanOptions;
 #[cfg(target_os = "macos")]
-pub use coretext::{find_font_for_codepoint, register_font, unregister_font};
+pub use coretext::{
+    find_font_for_codepoint, load_fallback_font_bytes, load_fallback_font_bytes_with_index,
+    register_font, unregister_font,
+};
 
 #[cfg(windows)]
 mod directwrite;

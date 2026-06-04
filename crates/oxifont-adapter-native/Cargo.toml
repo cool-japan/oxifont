@@ -27,7 +27,7 @@ windows = { workspace = true }
 
 [dev-dependencies]
 criterion            = { workspace = true }
-oxifont-adapter-pure = { workspace = true }
+oxifont-adapter-pure = { path = "../oxifont-adapter-pure" }
 
 [[bench]]
 name    = "native_bench"

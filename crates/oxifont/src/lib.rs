@@ -497,9 +497,13 @@ pub fn decode_and_parse(data: &[u8]) -> Result<ParsedFace, FontError> {
 ///
 /// Wraps either a subsetting failure or a WOFF2 encoding failure.
 ///
+/// This enum is `#[non_exhaustive]`: downstream `match` expressions must include
+/// a catch-all arm so that new variants can be added in minor versions.
+///
 /// Requires the `subset` and `woff2` Cargo features.
 #[cfg(all(feature = "subset", feature = "woff2"))]
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum SubsetEncodeError {
     /// The subsetting step failed.
     Subset(oxifont_subset::SubsetError),

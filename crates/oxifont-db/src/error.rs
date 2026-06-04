@@ -1,7 +1,11 @@
 //! Error types for `oxifont-db`.
 
 /// Errors produced by the font database and query engine.
+///
+/// This enum is `#[non_exhaustive]`: downstream `match` expressions must include
+/// a catch-all arm so that new variants can be added in minor versions.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum DbError {
     /// An I/O error occurred (file read, directory scan, etc.).
     Io(std::io::Error),

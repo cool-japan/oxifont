@@ -4,6 +4,8 @@
 //! byte buffer, including the offset table, table directory, padded table
 //! data, and a corrected `head.checkSumAdjustment` field.
 
+use std::borrow::Cow;
+
 use crate::error::WebFontError;
 
 // ------------------------------------------------------------------ constants
@@ -137,6 +139,110 @@ pub fn build_sfnt(
     Ok(out)
 }
 
+/// Build an SFNT from a list of `(tag, data)` pairs where each table may be
+/// either an owned `Vec<u8>` (transformed tables) or a borrowed `&[u8]` slice
+/// (verbatim tables from the decompressed WOFF2 data block).
+///
+/// This variant avoids the per-table allocation in the hot decode path: the
+/// majority of OpenType tables are not transformed and can be referenced
+/// directly from the decompressed buffer, eliminating one copy per table.
+///
+/// # Errors
+/// Returns [`WebFontError::Overflow`] if the assembled font exceeds 4 GiB.
+pub fn build_sfnt_cow<'a>(
+    sfnt_version: u32,
+    tables: &[([u8; 4], Cow<'a, [u8]>)],
+) -> Result<Vec<u8>, WebFontError> {
+    let num_tables = tables.len() as u16;
+    let (search_range, entry_selector, range_shift) = search_params(num_tables);
+    let dir_size: usize = 12 + 16 * tables.len();
+
+    struct Entry {
+        tag: [u8; 4],
+        checksum: u32,
+        offset: u32,
+        length: u32,
+        /// Padded table bytes — owned to allow zero-padding without mutating source.
+        padded: Vec<u8>,
+    }
+
+    let mut entries: Vec<Entry> = Vec::with_capacity(tables.len());
+    let mut running_offset = dir_size;
+
+    for (tag, data) in tables {
+        // Build a padded copy only for pad bytes; the original may be borrowed.
+        let data_slice: &[u8] = data.as_ref();
+        let padded = pad4_ref(data_slice);
+
+        let length = data_slice.len() as u32;
+        let offset =
+            u32::try_from(running_offset).map_err(|_| WebFontError::Overflow("table offset"))?;
+        let checksum = table_checksum(data_slice);
+
+        running_offset = running_offset
+            .checked_add(padded.len())
+            .ok_or(WebFontError::Overflow("running offset"))?;
+
+        entries.push(Entry {
+            tag: *tag,
+            checksum,
+            offset,
+            length,
+            padded,
+        });
+    }
+
+    let total = running_offset;
+    let mut out = Vec::with_capacity(total);
+
+    out.extend_from_slice(&sfnt_version.to_be_bytes());
+    out.extend_from_slice(&num_tables.to_be_bytes());
+    out.extend_from_slice(&search_range.to_be_bytes());
+    out.extend_from_slice(&entry_selector.to_be_bytes());
+    out.extend_from_slice(&range_shift.to_be_bytes());
+
+    for e in &entries {
+        out.extend_from_slice(&e.tag);
+        out.extend_from_slice(&e.checksum.to_be_bytes());
+        out.extend_from_slice(&e.offset.to_be_bytes());
+        out.extend_from_slice(&e.length.to_be_bytes());
+    }
+
+    for e in &entries {
+        out.extend_from_slice(&e.padded);
+    }
+
+    fix_head_checksum_adjustment(
+        &mut out,
+        &entries
+            .iter()
+            .map(|e| (e.tag, e.offset))
+            .collect::<Vec<_>>(),
+    );
+
+    Ok(out)
+}
+
+/// Return a version of `data` padded to a 4-byte multiple.
+///
+/// If `data.len()` is already a multiple of 4, returns a `Vec` cloned from
+/// `data` (the clone is needed because padding may require mutation and the
+/// source is a potentially borrowed slice).  Callers that hold a `Cow::Owned`
+/// can pass it directly to avoid this extra allocation; the `build_sfnt_cow`
+/// path only calls this once per table, so the overhead is proportional to the
+/// number of tables, not to their sizes.
+fn pad4_ref(data: &[u8]) -> Vec<u8> {
+    let rem = data.len() % 4;
+    if rem == 0 {
+        data.to_vec()
+    } else {
+        let mut v = Vec::with_capacity(data.len() + (4 - rem));
+        v.extend_from_slice(data);
+        v.extend_from_slice(&[0u8; 4][..4 - rem]);
+        v
+    }
+}
+
 /// Fix the `checkSumAdjustment` field in the `head` table of an assembled SFNT.
 ///
 /// Per the spec: `checkSumAdjustment = 0xB1B0AFBA − sum_of_all_uint32_words`.
@@ -187,6 +293,17 @@ fn search_params(num_tables: u16) -> (u16, u16, u16) {
 /// Detect whether the SFNT contains CFF or TrueType outlines by inspecting the
 /// table directory (presence of `CFF ` or `CFF2` → OpenType; otherwise TT).
 pub fn detect_sfnt_version(tables: &[([u8; 4], Vec<u8>)]) -> u32 {
+    let has_cff = tables.iter().any(|(t, _)| t == b"CFF " || t == b"CFF2");
+    if has_cff {
+        SFNT_MAGIC_CFF
+    } else {
+        SFNT_MAGIC_TT
+    }
+}
+
+/// Like [`detect_sfnt_version`] but accepts the Cow-based table list used by
+/// the zero-copy decode path.
+pub fn detect_sfnt_version_cow(tables: &[([u8; 4], Cow<'_, [u8]>)]) -> u32 {
     let has_cff = tables.iter().any(|(t, _)| t == b"CFF " || t == b"CFF2");
     if has_cff {
         SFNT_MAGIC_CFF

@@ -41,7 +41,7 @@ In-memory indexed font database with CSS Fonts Level 4 hybrid query engine. Prov
 - [x] Test locale-specific family name lookup (ja-JP -> Japanese family name)
 - [x] Test BCP-47 to LCID mapping for all entries in the static table
 - [x] Test cache serialization round-trip (behind `cache` feature)
-- [ ] Add fuzzing target for Query matching with random weight/stretch/style combinations
+- [x] Add fuzzing target for Query matching with random weight/stretch/style combinations — `fuzz/` infrastructure added (2026-06-03): fuzz_query.rs with thread-local synthetic FontDatabase (880 faces: 8 families × 11 weights × 2 styles × 5 stretches), fuzzes weight(1..=1000), all stretches, all family variants; verifies match_best/match_all never panic and returned faces have valid weight/stretch ranges.
 - [x] Benchmark `Query::match_best` with 5000+ faces loaded (planned 2026-05-26)
   - **Design:** Bench lives in `crates/oxifont-adapter-pure/benches/font_database_find.rs` (Slice 5 infrastructure). This item tracks the oxifont-db-specific optimization work in Slice 7.
 
@@ -58,7 +58,7 @@ In-memory indexed font database with CSS Fonts Level 4 hybrid query engine. Prov
   - **Risk:** Weight-snap boundary cases (e.g., 550). Mitigation: explicit per-weight tests added in `tests/match_best_allocations.rs`.
 
 ## Integration
-- [ ] Serve as the indexed backend for oxifont facade crate's `db` feature module
-- [ ] Provide font metadata to oxitext-shape for automatic font selection per script
-- [ ] Feed locale-aware family names to oxitext-icu for locale-specific rendering pipelines
+- [x] Serve as the indexed backend for oxifont facade crate's `db` feature module — already wired in `oxifont/src/lib.rs` `db` feature module; `db::FontDatabase`, `db::Query`, etc. re-exported.
+- [x] Provide font metadata to oxitext-shape for automatic font selection per script — `FontDatabase::faces_for_script(tag: &[u8; 4])` added 2026-06-03; `oxitext-shape/system_fonts.rs` uses `Query::match_with_fallback` for per-script coverage.
+- [x] Feed locale-aware family names to oxitext-icu for locale-specific rendering pipelines — `FontDatabase::locale_families_for(bcp47: &str) -> Vec<String>` added 2026-06-03; collects distinct locale-specific family names from all loaded faces for a given BCP-47 locale tag (with subtag-stripping fallback). Tests in `tests/integration.rs`.
 - [x] Coordinate cache invalidation with oxifont-discovery's mtime tracking

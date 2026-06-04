@@ -44,6 +44,6 @@ Composes `oxifont-discovery` and `oxifont-parser` into a `FontCatalog` implement
   - **Risk:** Lazy db has same FaceInfo fields as eager db — unicode_ranges populated via cmap read in discovery.
 
 ## Integration
-- [ ] Serve as the default font backend for oxitext's `Pipeline::new(font_db)`
-- [ ] Provide font data access for oxifont-subset operations
-- [ ] Bridge to oxifont-db for CSS Level 4 queries when the `db` feature is enabled
+- [x] Serve as the default font backend for oxitext's `Pipeline::new(font_db)` — `oxitext::Pipeline::new(&oxifont::FontDatabase)` already implemented; `pipeline_integration_pattern_via_font_bytes` test in `tests/subset_integration.rs` verifies the pattern.
+- [x] Provide font data access for oxifont-subset operations — `font_bytes()` always available; `subset_face()` and `subset_face_for_web()` added behind `feature = "subset"` (wraps `oxifont_subset::subset_font` / `subset_font_for_web`). Tests in `tests/subset_integration.rs`.
+- [x] Bridge to oxifont-db for CSS Level 4 queries when the `db` feature is enabled — `into_db()` / `as_db()` implemented behind `feature = "db"`. Tests in `tests/integration.rs`.

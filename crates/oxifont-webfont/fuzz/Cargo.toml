@@ -1,0 +1,32 @@
+[package]
+name = "oxifont-webfont-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+oxifont-webfont = { path = "..", features = ["woff1", "woff2"] }
+
+[[bin]]
+name = "fuzz_woff1_decode"
+path = "fuzz_targets/fuzz_woff1_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_woff2_decode"
+path = "fuzz_targets/fuzz_woff2_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_detect_auto"
+path = "fuzz_targets/fuzz_detect_auto.rs"
+test = false
+doc = false

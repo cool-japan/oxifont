@@ -286,7 +286,34 @@ pub struct FontMetrics {
 
 /// A single path command produced by glyph outline extraction.
 ///
-/// Coordinates are in font design units.
+/// Coordinates are in font design units (positive Y is up, following font
+/// convention). Consumers that render to screen space (Y down) must negate Y
+/// before drawing.
+///
+/// # Coordinate system
+///
+/// All coordinates use the OpenType/TrueType font coordinate system:
+/// - X increases left-to-right.
+/// - Y increases bottom-to-top (Y=0 is the baseline).
+/// - Values are in design units; divide by `units_per_em` and multiply by the
+///   target pixel size to convert to pixels.
+///
+/// # Field-name convention
+///
+/// Control-point fields use the prefix `cx`/`cy` (curve control) rather than
+/// `x1`/`y1` to avoid ambiguity with endpoint coordinates. When passing
+/// commands to renderers that use a different convention (e.g. `x1`/`y1`),
+/// map `cx → x1`, `cy → y1`, `cx1 → x1`, `cy1 → y1`, `cx2 → x2`, `cy2 → y2`.
+/// The [`GlyphOutline::transform`] helper applies a linear transform to all
+/// coordinates and is suitable for scaling + Y-flip when targeting screen space.
+///
+/// # Compatibility with `oxitext-raster`
+///
+/// `oxitext-raster`'s `PathCommand` type uses `x1`/`y1` for `QuadTo` control
+/// points and `x1`/`y1`/`x2`/`y2` for `CubicTo`. The `OxifontRaster` backend
+/// in `oxitext-raster` (feature `oxifont-backend`) consumes `GlyphOutline`
+/// directly via the field destructuring pattern, so these types are compatible
+/// at the Rust pattern-match level. No intermediate conversion type is needed.
 ///
 /// # Example
 /// ```
@@ -298,6 +325,21 @@ pub struct FontMetrics {
 ///     GlyphOutline::Close,
 /// ];
 /// assert_eq!(cmds.len(), 4);
+///
+/// // Scale to pixels (units_per_em=1000, target=16px) with Y-flip:
+/// let scale = 16.0_f32 / 1000.0;
+/// let pixel_cmds: Vec<GlyphOutline> = cmds
+///     .iter()
+///     .map(|c| c.transform(scale, -scale, 0.0, 16.0))
+///     .collect();
+/// // After transform, Y values are negated and scaled.
+/// match &pixel_cmds[0] {
+///     GlyphOutline::MoveTo { x, y } => {
+///         assert!((*x - 0.0).abs() < 1e-5);
+///         assert!((*y - 16.0).abs() < 1e-5); // 0.0 * -scale + 16.0 = 16.0
+///     }
+///     _ => unreachable!(),
+/// }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum GlyphOutline {
@@ -316,10 +358,13 @@ pub enum GlyphOutline {
         y: f32,
     },
     /// Draw a quadratic Bezier curve (one control point).
+    ///
+    /// The control point `(cx, cy)` corresponds to `(x1, y1)` in renderers
+    /// that use numbered control-point names.
     QuadTo {
-        /// Control point X.
+        /// Control point X (maps to `x1` in many renderer APIs).
         cx: f32,
-        /// Control point Y.
+        /// Control point Y (maps to `y1` in many renderer APIs).
         cy: f32,
         /// End point X.
         x: f32,
@@ -327,14 +372,17 @@ pub enum GlyphOutline {
         y: f32,
     },
     /// Draw a cubic Bezier curve (two control points).
+    ///
+    /// Control points `(cx1, cy1)` and `(cx2, cy2)` correspond to `(x1, y1)`
+    /// and `(x2, y2)` in renderers that use numbered control-point names.
     CubicTo {
-        /// First control point X.
+        /// First control point X (maps to `x1` in many renderer APIs).
         cx1: f32,
-        /// First control point Y.
+        /// First control point Y (maps to `y1` in many renderer APIs).
         cy1: f32,
-        /// Second control point X.
+        /// Second control point X (maps to `x2` in many renderer APIs).
         cx2: f32,
-        /// Second control point Y.
+        /// Second control point Y (maps to `y2` in many renderer APIs).
         cy2: f32,
         /// End point X.
         x: f32,
@@ -343,6 +391,190 @@ pub enum GlyphOutline {
     },
     /// Close the current contour (draw a line back to the last MoveTo).
     Close,
+}
+
+impl GlyphOutline {
+    /// Apply a linear coordinate transform to every coordinate in this command.
+    ///
+    /// Each coordinate `v` is transformed as `v * scale + offset` where
+    /// `x_scale`/`x_offset` apply to X coordinates and `y_scale`/`y_offset`
+    /// apply to Y coordinates.
+    ///
+    /// This is the canonical way to convert from font design space (Y-up,
+    /// design units) to screen space (Y-down, pixels):
+    ///
+    /// ```text
+    /// x_scale = px_size / units_per_em
+    /// y_scale = -(px_size / units_per_em)   // negate to flip Y axis
+    /// x_offset = 0.0
+    /// y_offset = ascender_px                // shift baseline down
+    /// ```
+    ///
+    /// # Example
+    /// ```
+    /// use oxifont_core::GlyphOutline;
+    ///
+    /// // A 1000-unit-per-em font rendered at 16px: scale = 0.016, y-flip.
+    /// let cmd = GlyphOutline::LineTo { x: 500.0, y: 700.0 };
+    /// let scale = 16.0_f32 / 1000.0;
+    /// let transformed = cmd.transform(scale, -scale, 0.0, 16.0);
+    /// match transformed {
+    ///     GlyphOutline::LineTo { x, y } => {
+    ///         assert!((x - 8.0).abs() < 1e-5, "x={x}");
+    ///         // y = 700.0 * -0.016 + 16.0 = -11.2 + 16.0 = 4.8
+    ///         assert!((y - 4.8).abs() < 1e-4, "y={y}");
+    ///     }
+    ///     _ => unreachable!(),
+    /// }
+    /// ```
+    #[must_use]
+    pub fn transform(
+        &self,
+        x_scale: f32,
+        y_scale: f32,
+        x_offset: f32,
+        y_offset: f32,
+    ) -> GlyphOutline {
+        let tx = |v: f32| v * x_scale + x_offset;
+        let ty = |v: f32| v * y_scale + y_offset;
+        match *self {
+            GlyphOutline::MoveTo { x, y } => GlyphOutline::MoveTo { x: tx(x), y: ty(y) },
+            GlyphOutline::LineTo { x, y } => GlyphOutline::LineTo { x: tx(x), y: ty(y) },
+            GlyphOutline::QuadTo { cx, cy, x, y } => GlyphOutline::QuadTo {
+                cx: tx(cx),
+                cy: ty(cy),
+                x: tx(x),
+                y: ty(y),
+            },
+            GlyphOutline::CubicTo {
+                cx1,
+                cy1,
+                cx2,
+                cy2,
+                x,
+                y,
+            } => GlyphOutline::CubicTo {
+                cx1: tx(cx1),
+                cy1: ty(cy1),
+                cx2: tx(cx2),
+                cy2: ty(cy2),
+                x: tx(x),
+                y: ty(y),
+            },
+            GlyphOutline::Close => GlyphOutline::Close,
+        }
+    }
+
+    /// Return an iterator over all (x, y) coordinate pairs embedded in this
+    /// command, including control points.
+    ///
+    /// Useful for computing bounding boxes without pattern-matching on each
+    /// variant.  `Close` yields no coordinates.
+    ///
+    /// # Example
+    /// ```
+    /// use oxifont_core::GlyphOutline;
+    ///
+    /// let cmd = GlyphOutline::CubicTo {
+    ///     cx1: 10.0, cy1: 20.0,
+    ///     cx2: 30.0, cy2: 40.0,
+    ///     x: 50.0, y: 60.0,
+    /// };
+    /// let coords: Vec<(f32, f32)> = cmd.coords().collect();
+    /// assert_eq!(coords.len(), 3);
+    /// assert_eq!(coords[0], (10.0, 20.0));
+    /// assert_eq!(coords[2], (50.0, 60.0));
+    /// ```
+    pub fn coords(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
+        // Build a fixed-size stack array; use a counter to track how many are filled.
+        let mut buf = [(0.0f32, 0.0f32); 3];
+        let n = match *self {
+            GlyphOutline::MoveTo { x, y } => {
+                buf[0] = (x, y);
+                1
+            }
+            GlyphOutline::LineTo { x, y } => {
+                buf[0] = (x, y);
+                1
+            }
+            GlyphOutline::QuadTo { cx, cy, x, y } => {
+                buf[0] = (cx, cy);
+                buf[1] = (x, y);
+                2
+            }
+            GlyphOutline::CubicTo {
+                cx1,
+                cy1,
+                cx2,
+                cy2,
+                x,
+                y,
+            } => {
+                buf[0] = (cx1, cy1);
+                buf[1] = (cx2, cy2);
+                buf[2] = (x, y);
+                3
+            }
+            GlyphOutline::Close => 0,
+        };
+        buf.into_iter().take(n)
+    }
+
+    /// Compute the axis-aligned bounding box of a slice of outline commands.
+    ///
+    /// Returns `None` if no coordinate data is present (e.g. only `Close`
+    /// commands).  The returned tuple is `(x_min, y_min, x_max, y_max)`.
+    ///
+    /// Control points of quadratic and cubic curves are included in the bounding
+    /// box calculation.  This is a conservative estimate — the true curve bounds
+    /// may be tighter — but is sufficient for bitmap allocation.
+    ///
+    /// # Example
+    /// ```
+    /// use oxifont_core::GlyphOutline;
+    ///
+    /// let cmds = [
+    ///     GlyphOutline::MoveTo { x: 100.0, y: 0.0 },
+    ///     GlyphOutline::LineTo { x: 200.0, y: 700.0 },
+    ///     GlyphOutline::Close,
+    /// ];
+    /// let bbox = GlyphOutline::bounding_box(&cmds);
+    /// assert!(bbox.is_some());
+    /// let (x0, y0, x1, y1) = bbox.unwrap();
+    /// assert!((x0 - 100.0).abs() < 1e-5);
+    /// assert!((y0 - 0.0).abs() < 1e-5);
+    /// assert!((x1 - 200.0).abs() < 1e-5);
+    /// assert!((y1 - 700.0).abs() < 1e-5);
+    /// ```
+    pub fn bounding_box(cmds: &[GlyphOutline]) -> Option<(f32, f32, f32, f32)> {
+        let mut x_min = f32::INFINITY;
+        let mut y_min = f32::INFINITY;
+        let mut x_max = f32::NEG_INFINITY;
+        let mut y_max = f32::NEG_INFINITY;
+
+        for cmd in cmds {
+            for (x, y) in cmd.coords() {
+                if x < x_min {
+                    x_min = x;
+                }
+                if x > x_max {
+                    x_max = x;
+                }
+                if y < y_min {
+                    y_min = y;
+                }
+                if y > y_max {
+                    y_max = y;
+                }
+            }
+        }
+
+        if x_min.is_infinite() {
+            None
+        } else {
+            Some((x_min, y_min, x_max, y_max))
+        }
+    }
 }
 
 /// A kerning adjustment between two glyphs.
@@ -366,6 +598,10 @@ pub struct KerningPair {
 
 /// The type of color glyph data present in a font.
 ///
+/// This enum is `#[non_exhaustive]`: downstream `match` expressions must include
+/// a catch-all arm so that new OpenType color table formats can be added in
+/// minor versions without a semver break.
+///
 /// # Example
 /// ```
 /// use oxifont_core::ColorGlyphFormat;
@@ -374,6 +610,7 @@ pub struct KerningPair {
 /// assert_ne!(fmt, ColorGlyphFormat::Svg);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ColorGlyphFormat {
     /// COLR version 0 (layered color glyphs with CPAL palette).
     ColrV0,

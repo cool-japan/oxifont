@@ -86,8 +86,8 @@ Pure Rust WOFF1 and WOFF2 decoder. WOFF1: zlib decompression via `oxiarc-deflate
 - [x] Test WOFF2 UIntBase128 edge cases: maximum value, overflow, leading zeros
 - [x] Test checksum verification: modify a byte in a decoded table and verify detection
 - [x] Test WOFF1 uncompressed tables (comp_length == orig_length)
-- [ ] Test WOFF2 collection decoding once implemented
-- [ ] Fuzz WOFF1 and WOFF2 decoders with arbitrary bytes
+- [x] Test WOFF2 collection decoding once implemented — `tests/woff2_collection.rs` extended with synthetic 2-font TTC-in-WOFF2 test (2026-06-03): exercises parse_collection_header + extract_tables_by_index + select_font_tables_indexed; verifies per-font head tables are distinct and shared post table is identical
+- [x] Fuzz WOFF1 and WOFF2 decoders with arbitrary bytes — `fuzz/` infrastructure added (2026-06-03): fuzz_woff1_decode.rs, fuzz_woff2_decode.rs (also verifies streaming = one-shot invariant), fuzz_detect_auto.rs
 - [x] Benchmark decode time for Google Fonts WOFF2 files (Roboto, Noto Sans) (planned 2026-05-26)
   - **Design:** `benches/woff2_decode.rs` — encode test.ttf fixture once, bench `decode_woff2(&bytes)` and `decode_woff2_streaming(Cursor::new(&bytes))`. Requires `criterion.workspace = true` in `[dev-dependencies]` + `[[bench]] name = "woff2_decode" harness = false`. Workspace criterion dep added by Slice 5 first.
 
@@ -95,9 +95,9 @@ Pure Rust WOFF1 and WOFF2 decoder. WOFF1: zlib decompression via `oxiarc-deflate
 - [x] Pre-allocate decompressed buffers using origLength hints from table directory
   - WOFF1 uncompressed path: pre-allocates with `Vec::with_capacity(orig_length)` before `extend_from_slice`.
   - WOFF1/WOFF2 compressed paths: blocked on upstream oxiarc-deflate/oxiarc-brotli not exposing a `decompress_with_capacity(data, hint)` API; documented in code.
-- [ ] Avoid intermediate Vec allocations during table transform reconstruction
+- [x] Avoid intermediate Vec allocations during table transform reconstruction — `extract_and_transform_tables_cow` added (2026-06-03): non-transformed tables returned as `Cow::Borrowed` from decompressed buffer; `build_sfnt_cow` in sfnt.rs accepts `Cow<[u8]>` table list. Hot decode path (decode_with_metadata) uses cow variant, saving one Vec::clone per non-transformed table.
 - [x] Stream brotli decompression directly into table slicing (subsumed by streaming decoder above — will be marked done as part of that implementation)
-- [ ] Benchmark WOFF2 decode against woff2-rs and fontkit for performance comparison
+- [x] Benchmark WOFF2 decode against woff2-rs and fontkit for performance comparison — `benches/woff2_compare.rs` compares oxifont-webfont decode/encode against `woff2-patched` (woff2-rs) and `ttf2woff2`; fontkit is JS-only so not benchmarkable from Rust
 
 ## Integration
 - [x] Pipeline with oxifont-subset: subset first, then encode to WOFF2 for web delivery — `oxifont::subset_and_encode_woff2()` in facade crate

@@ -58,11 +58,21 @@ Round 14 Slice 2 complete (2026-05-27). `BundledFont` struct extended with `pars
 ## Performance
 - [x] Benchmark `BundledFont::parse()` cold-start latency
   - **Design:** Added as part of Slice 5 criterion bench infrastructure; bench in `crates/oxifont-adapter-pure/benches/` or bundled benches.
-- [ ] Measure binary size impact of each bundled font (report in README)
+- [x] Measure binary size impact of each bundled font (2026-06-03):
+  - NotoSans-Regular.ttf: 431,364 bytes (421 KB) — default `bundled-noto` feature
+  - NotoSans-Bold.ttf: 575,740 bytes (562 KB) — `bundled-noto` feature
+  - NotoSans-Italic.ttf: 2,322,640 bytes (2.21 MB) — variable TTF, `bundled-noto` feature
+  - NotoSansMono-Regular.ttf: 1,708,408 bytes (1.63 MB) — variable TTF, `bundled-noto` feature
+  - NotoSerif-Regular.ttf: 482,540 bytes (471 KB) — `bundled-noto-serif` feature
+  - NotoSansCJK-JP/SC/KR/TC: 0 bytes (stub) — `bundled-noto-cjk` feature gate (font not bundled)
+  - Total with default `bundled-noto` (all 4 Latin fonts): ~5.0 MB before compression
+  - With `compressed` feature: fonts stored as oxiarc-deflate compressed blobs (build.rs compression deferred)
 - [x] Add `compressed` feature: store fonts as OxiARC-deflate compressed, decompress on first `parse()` to reduce binary size (~80 SLOC) — API implemented (`BundledFont::decompressed_data()`, `compressed::decompress_font()`); build.rs compression generation deferred
 
 ## Integration
 - [x] Wire `BundledCatalog` into `oxifont` facade crate as fallback when system font discovery returns zero fonts (`system_fonts_with_bundled_fallback()` in oxifont/src/lib.rs)
-- [ ] Use `oxifont-bundled` as the default font source in `oxitext` rasterization tests (deterministic rendering without system fonts)
-- [ ] Provide `oxifont_bundled::SANS_REGULAR` as default fallback in `oxipdf` text rendering when requested font is missing
+- [x] Use `oxifont-bundled` as the default font source in `oxitext` rasterization tests (deterministic rendering without system fonts)
+  - Added `oxifont-bundled` as dev-dependency to `oxitext` facade crate; updated all 7 integration-test `load_test_font()` helpers in `oxitext/crates/oxitext/tests/` to fall back to `oxifont_bundled::NOTO_SANS_REGULAR` before panicking, matching the pattern already in `oxitext-raster/tests/simd_parity.rs`.
+- [x] Provide `oxifont_bundled::SANS_REGULAR` as default fallback in `oxipdf` text rendering when requested font is missing
+  - **SANS_REGULAR already exported** at `crates/oxifont-bundled/src/catalog.rs` (static `BundledFont`, `pub use catalog::SANS_REGULAR` in `lib.rs` line 130, gated `#[cfg(feature = "bundled-noto")]`). Downstream can import `oxifont_bundled::SANS_REGULAR` directly. The `oxipdf` crate integration itself remains deferred until `oxipdf` is created.
 - [x] Add integration test: round-trip from `BundledCatalog::find()` through `oxifont-parser::ParsedFace` to `FontFace::glyph_for_char('A')`

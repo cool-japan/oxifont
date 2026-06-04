@@ -42,6 +42,8 @@ pub mod os2;
 pub mod otl;
 /// OpenType Layout GPOS table rewriter.
 pub mod otl_gpos;
+/// On-the-fly font subsetting for PDF text rendering pipelines.
+pub mod pdf_subset;
 /// sbix table subsetting: rebuild per-glyph bitmap strike arrays for the new GID space.
 pub mod sbix;
 /// SVG table subsetting: remove document index entries for removed GIDs.
@@ -164,6 +166,14 @@ pub struct SubsetStats {
 // ---------------------------------------------------------------------------
 // cmap → GID resolution
 // ---------------------------------------------------------------------------
+
+/// Walk a cmap table and build a map from Unicode codepoint (u32) → GID (u16).
+///
+/// This is the public re-export used by [`pdf_subset::PdfFontSubsetter`].
+/// Tries format 12 first (full Unicode), then format 4 (BMP).
+pub fn cmap_to_gid_map_pub(cmap_data: &[u8]) -> Result<HashMap<u32, u16>, SubsetError> {
+    cmap_to_gid_map(cmap_data)
+}
 
 /// Walk a cmap table and build a map from Unicode codepoint (u32) → GID (u16).
 ///

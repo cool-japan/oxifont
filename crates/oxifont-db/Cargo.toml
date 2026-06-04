@@ -31,7 +31,7 @@ default = []
 cache = ["dep:serde_json", "dep:oxicode"]
 
 [dev-dependencies]
-oxifont-core = { workspace = true }
+oxifont-core = { path = "../oxifont-core" }
 criterion    = { workspace = true, features = ["cargo_bench_support"] }
 
 [[bench]]

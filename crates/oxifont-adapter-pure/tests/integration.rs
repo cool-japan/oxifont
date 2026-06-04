@@ -1,14 +1,17 @@
 //! Integration tests for `FontDatabase` requiring real system fonts.
 //!
 //! These tests skip gracefully if no system fonts are found on the host. They
-//! exercise `system()`, `load_face()`, and `find_best_for_text()` with actual
-//! font files on the filesystem — code paths that the unit tests (which use a
-//! bundled fixture) cannot reach.
+//! exercise `system()`, `load_face()`, `font_bytes()`, and `find_best_for_text()`
+//! with actual font files on the filesystem — code paths that the unit tests
+//! (which use a bundled fixture) cannot reach.
 
 use oxifont_adapter_pure::FontDatabase;
 use oxifont_core::FontFace as _;
 use oxifont_core::{FontCatalog as _, FontQuery};
 use oxifont_parser::ParsedFace;
+
+/// Path to the shared parser fixture used by unit tests.
+static FIXTURE_BYTES: &[u8] = include_bytes!("../../oxifont-parser/tests/fixtures/test.ttf");
 
 // ---------------------------------------------------------------------------
 // Helper — locate any TTF font on the host
@@ -205,4 +208,134 @@ fn css_generic_sans_serif_resolves_on_macos() {
         // If neither alias is present (unusual but theoretically possible),
         // we skip the assertion rather than fail the test suite.
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test 5 — font_bytes() returns raw SFNT bytes suitable for subsetting
+// ---------------------------------------------------------------------------
+
+/// `FontDatabase::font_bytes()` must return non-empty bytes matching the data
+/// of the file pointed to by `FaceInfo::path`. This confirms the method is
+/// usable as a source for `oxifont_subset::subset_font`.
+#[test]
+fn font_bytes_returns_raw_file_bytes() {
+    // Use an in-memory face from the bundled fixture so the test does not
+    // depend on system fonts. We write the fixture to a temp file first so
+    // that `FaceInfo::path` points to an actual file (as the adapter expects).
+    let tmp_dir = std::env::temp_dir().join(format!("oxifont_font_bytes_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+    let font_path = tmp_dir.join("test.ttf");
+    std::fs::write(&font_path, FIXTURE_BYTES).expect("write fixture");
+
+    let db = FontDatabase::scan(&[&tmp_dir]).expect("scan must not error");
+
+    let info = match db.faces().first() {
+        Some(f) => f,
+        None => {
+            // No face parsed from the fixture — skip gracefully.
+            let _ = std::fs::remove_file(&font_path);
+            let _ = std::fs::remove_dir(&tmp_dir);
+            return;
+        }
+    };
+
+    let bytes = db
+        .font_bytes(info)
+        .expect("font_bytes() must succeed for an existing font file");
+
+    assert!(
+        !bytes.is_empty(),
+        "font_bytes() must return non-empty bytes for a valid font file"
+    );
+
+    // The bytes must start with a valid SFNT magic (TTF 0x00010000 or OTF
+    // "OTTO" or TTC "ttcf"). The fixture is a TTF.
+    let is_valid_sfnt = bytes.len() >= 4
+        && (bytes[..4] == [0x00, 0x01, 0x00, 0x00]
+            || bytes[..4] == *b"OTTO"
+            || bytes[..4] == *b"ttcf");
+    assert!(
+        is_valid_sfnt,
+        "font_bytes() must return bytes starting with a valid SFNT magic; got {:?}",
+        &bytes[..4.min(bytes.len())]
+    );
+
+    // Verify that the bytes match what we wrote (i.e. the correct file is read).
+    assert_eq!(
+        bytes, FIXTURE_BYTES,
+        "font_bytes() must return the exact bytes of the file on disk"
+    );
+
+    let _ = std::fs::remove_file(&font_path);
+    let _ = std::fs::remove_dir(&tmp_dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test 6 — into_db() bridge to oxifont-db (requires feature = "db")
+// ---------------------------------------------------------------------------
+
+/// `FontDatabase::into_db()` must produce an `oxifont_db::FontDatabase` with
+/// the same face count, and the resulting database must support CSS Level 4
+/// queries via `oxifont_db::Query`.
+#[cfg(feature = "db")]
+#[test]
+fn into_db_bridge_produces_equivalent_catalog() {
+    let mut pure_db = FontDatabase::new();
+    pure_db
+        .add_bytes(FIXTURE_BYTES.to_vec(), None)
+        .expect("add_bytes must succeed for a valid TTF");
+
+    let pure_count = pure_db.len();
+    assert!(pure_count > 0, "precondition: at least one face added");
+
+    // Grab the family name before consuming pure_db.
+    let family = pure_db.faces()[0].family.to_string();
+
+    // Convert to oxifont-db.
+    let db_db = pure_db.into_db();
+
+    // Same face count after conversion.
+    assert_eq!(
+        db_db.stats().face_count,
+        pure_count,
+        "into_db() must produce a database with the same face count"
+    );
+
+    // The family must be queryable in the new database.
+    let hits = db_db.faces_by_family(&family);
+    assert!(
+        !hits.is_empty(),
+        "oxifont_db::FontDatabase must return faces for family {:?} after conversion",
+        family
+    );
+}
+
+/// `FontDatabase::as_db()` must produce an equivalent CSS-queryable database
+/// while leaving the original catalog intact.
+#[cfg(feature = "db")]
+#[test]
+fn as_db_bridge_does_not_consume_catalog() {
+    let mut pure_db = FontDatabase::new();
+    pure_db
+        .add_bytes(FIXTURE_BYTES.to_vec(), None)
+        .expect("add_bytes must succeed for a valid TTF");
+
+    let pure_count = pure_db.len();
+
+    // Convert by reference.
+    let db_db = pure_db.as_db();
+
+    // Original catalog is unchanged.
+    assert_eq!(
+        pure_db.len(),
+        pure_count,
+        "as_db() must not consume the original catalog"
+    );
+
+    // CSS db has same face count.
+    assert_eq!(
+        db_db.stats().face_count,
+        pure_count,
+        "as_db() must produce a database with the same face count"
+    );
 }

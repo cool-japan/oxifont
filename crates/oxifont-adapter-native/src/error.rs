@@ -5,7 +5,11 @@
 /// Provides richer diagnostic information than the generic [`oxifont_core::FontError`].
 /// Convert to [`oxifont_core::FontError`] via the [`From`] impl (or the `?` operator)
 /// wherever the caller expects the generic type.
+///
+/// This enum is `#[non_exhaustive]`: downstream `match` expressions must include
+/// a catch-all arm so that new variants can be added in minor versions.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum NativeError {
     /// CoreText descriptor enumeration returned an unexpected failure (macOS).
     #[cfg(target_os = "macos")]

@@ -61,14 +61,14 @@ workspace = true
 optional = true
 
 [dev-dependencies.oxifont-webfont]
-workspace = true
+path = "../oxifont-webfont"
 features = ["woff2"]
 
 [dev-dependencies.oxifont-subset]
-workspace = true
+path = "../oxifont-subset"
 
 [dev-dependencies.oxifont-parser]
-workspace = true
+path = "../oxifont-parser"
 
 [dev-dependencies.oxifont-discovery]
-workspace = true
+path = "../oxifont-discovery"

@@ -1,5 +1,9 @@
 /// Errors from WOFF decoding operations.
+///
+/// This enum is `#[non_exhaustive]`: downstream `match` expressions must include
+/// a catch-all arm so that new variants can be added in minor versions.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum WebFontError {
     /// The input data is too short to contain a valid header.
     TooShort,

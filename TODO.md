@@ -1,8 +1,8 @@
 # OxiFont Project TODO
 
 ## Status
-Pure Rust font discovery, parsing, subsetting, and webfont processing. **v0.1.0 released 2026-06-01.**
-10 crates in workspace, ~28 000 Rust SLOC, 860 tests passing (0 failures). M0–M7 milestones complete.
+Pure Rust font discovery, parsing, subsetting, and webfont processing. **v0.1.1 released 2026-06-04.**
+10 crates in workspace, ~28 000 Rust SLOC, 949 tests passing (0 failures). M0–M7 milestones complete.
 Full pipeline: TTF/OTF/TTC parsing, filesystem and native (CoreText/DirectWrite) font enumeration,
 CSS Fonts Level 4 matching, TrueType+CFF glyph subsetting, WOFF1/WOFF2 encode+decode,
 bundled Noto fonts, SfntTableMap shared table directory, COLR/CBDT/SVG/sbix/MATH subsetting.
@@ -69,7 +69,7 @@ bundled Noto fonts, SfntTableMap shared table directory, COLR/CBDT/SVG/sbix/MATH
 ### M7 (In Progress)
 - [x] oxifont-bundled: SIL-OFL-licensed Noto font subsets for environments without system fonts
 - [x] Binary cache format (replace JSON with compact binary for faster cold start)
-- [ ] TrueType hinting interpreter (deferred: modern CFF outlines and oxitext pseudo-hinting cover realistic use cases)
+- [ ] TrueType hinting interpreter (deferred: modern CFF outlines and oxitext pseudo-hinting cover realistic use cases) **DEFERRED: modern CFF outlines and oxitext pseudo-hinting cover realistic rendering use cases; a full hinting interpreter adds ~2000 SLOC of complex bytecode execution for marginal quality gain at target resolutions.**
 
 ## Cross-Crate Tasks
 - [x] Unify `VariationAxis` (oxifont-core) and `VariableAxis` (oxifont-db) into a single shared type
@@ -88,8 +88,8 @@ bundled Noto fonts, SfntTableMap shared table directory, COLR/CBDT/SVG/sbix/MATH
   - **Tests:** Synthetic HVAR table with distinct IVS/advanceWidthMapping/lsb offsets; assert each field read correctly before and after rewrite.
   - **Risk:** Synthetic-test may mis-encode the layout. Mitigation: cross-check byte offsets against spec in test comment; assert each field independently.
 - [x] End-to-end integration test: discover -> query -> subset -> encode WOFF2 -> decode -> verify
-- [ ] CI cross-compilation testing: Windows (DirectWrite), Linux, macOS targets
-- [ ] Publish documentation on docs.rs with all feature combinations documented
+- [ ] CI cross-compilation testing: Windows (DirectWrite), Linux, macOS targets **BLOCKED: COOLJAPAN policy prohibits adding .github/workflows/*.yml files other than pypi-publish.yml and npm-publish.yml; cross-compilation CI must be set up out-of-band.**
+- [ ] Publish documentation on docs.rs with all feature combinations documented **BLOCKED: docs.rs publication happens automatically on cargo publish; publishing is not permitted without explicit user approval per COOLJAPAN policy.**
 
 ## Per-Subcrate TODOs
 See individual TODO.md files in each subcrate directory:

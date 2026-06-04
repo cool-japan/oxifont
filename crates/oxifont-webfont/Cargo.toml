@@ -21,10 +21,13 @@ oxiarc-deflate = { workspace = true, optional = true }
 oxiarc-brotli  = { workspace = true, optional = true }
 
 [dev-dependencies]
-oxifont-core = { workspace = true }
+oxifont-core  = { path = "../oxifont-core" }
 oxiarc-deflate = { workspace = true }
 oxiarc-brotli  = { workspace = true }
 criterion      = { workspace = true }
+woff2-patched  = { workspace = true }
+ttf2woff2      = { workspace = true }
+bytes          = { workspace = true }
 
 [[bench]]
 name = "woff2_decode"
@@ -33,5 +36,10 @@ required-features = ["woff2"]
 
 [[bench]]
 name = "woff2_streaming"
+harness = false
+required-features = ["woff2"]
+
+[[bench]]
+name = "woff2_compare"
 harness = false
 required-features = ["woff2"]

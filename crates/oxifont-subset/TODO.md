@@ -72,7 +72,7 @@ Pure Rust OpenType font subsetter. Takes SFNT bytes + codepoints, produces minim
 - [x] Test round-trip: subset then parse with ttf-parser, verify all retained glyphs accessible
 - [x] Add CFF font test fixture and test CFF subsetting
 - [x] Test name table filtering retains only IDs 0-6
-- [ ] Fuzz `subset_font` with arbitrary bytes and codepoint sets
+- [x] Fuzz `subset_font` with arbitrary bytes and codepoint sets — `fuzz/` infrastructure added (2026-06-03): fuzz_subset.rs (codepoint-bitmask derived from input), fuzz_subset_by_gids.rs (GID bitmask). Both verify no-panic + SFNT magic on success.
 
 ## Performance
 - [x] Avoid copying verbatim tables: use `Cow<[u8]>` (~30 SLOC)
@@ -88,7 +88,13 @@ Pure Rust OpenType font subsetter. Takes SFNT bytes + codepoints, produces minim
 
 ## Integration
 - [x] Provide subset API for oxifont-webfont WOFF2 encoding pipeline (subset then compress)
-- [ ] Integrate with oxitext for on-the-fly font subsetting in PDF text rendering
+- [x] Integrate with oxitext for on-the-fly font subsetting in PDF text rendering
+  - **Implementation:** `oxitext` workspace adds `oxifont-subset` as an optional dep behind the
+    `font-subset` feature. New `crates/oxitext/src/pdf_subset.rs` exposes `TextFontSubsetter` —
+    a thin ergonomic wrapper around `PdfFontSubsetter` with text-oriented API (`feed_text`,
+    `feed_char`, `feed_gid`, `merge`, `finalize`). Re-exports `SubsetOptions`, `SubsetStats`,
+    `SubsetError`, and `PdfSubsetResult` so callers need not add a direct dep on oxifont-subset.
+    Feature matrix table and "What each feature pulls in" section in oxitext `lib.rs` updated.
 - [x] Coordinate with oxifont-parser for shared table access via `SfntTableMap` (planned 2026-05-26)
   - **Design:** `oxifont-subset/src/tables.rs::read_table_directory` delegates to `SfntTableMap::parse(data)?` from `oxifont-core::sfnt`. Returns same `HashMap<[u8;4], &[u8]>` as before. New public API: `subset_with_table_map(map: &SfntTableMap, gid_set: &BTreeSet<u16>, opts: &SubsetOptions) -> Result<(Vec<u8>, SubsetStats), SubsetError>` — saves one directory walk for callers (facade) that pre-parse.
   - **Files:** `src/tables.rs` (delegate to SfntTableMap), `src/lib.rs` (add `subset_with_table_map`).

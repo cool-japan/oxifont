@@ -1,0 +1,27 @@
+[package]
+name = "oxifont-parser-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+oxifont-parser = { path = ".." }
+oxifont-core = { path = "../../oxifont-core" }
+
+[[bin]]
+name = "fuzz_parse"
+path = "fuzz_targets/fuzz_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_face_methods"
+path = "fuzz_targets/fuzz_face_methods.rs"
+test = false
+doc = false

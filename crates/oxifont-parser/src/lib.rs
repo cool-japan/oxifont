@@ -20,9 +20,63 @@
 use std::sync::Arc;
 
 use oxifont_core::{
-    ColorGlyphFormat, FaceInfo, FontError, FontFace, FontMetrics, FontStretch, FontStyle,
-    GlyphOutline, VariationAxis,
+    ColorGlyphFormat, FaceInfo, FontCapabilities, FontError, FontFace, FontMetrics, FontStretch,
+    FontStyle, GlyphOutline, VariationAxis,
 };
+
+// ---------------------------------------------------------------------------
+// GlyphOutlineData — rich outline data for direct rasterisation
+// ---------------------------------------------------------------------------
+
+/// Outline data for a single glyph, suitable for direct path rasterisation
+/// without needing fontdue or any third-party hinting engine.
+///
+/// Bundles the sequence of [`GlyphOutline`] path commands with the glyph's
+/// axis-aligned bounding box (in design units, from the font's `glyf`/`CFF`
+/// table) and its horizontal advance width. All coordinates are in font design
+/// units; callers must scale by `font_size / units_per_em` to obtain pixel
+/// coordinates.
+///
+/// # Bounding box accuracy
+///
+/// The `x_min`, `y_min`, `x_max`, `y_max` fields come from
+/// [`ttf_parser::Face::outline_glyph`], which reads the stored glyph bounding
+/// box (not a scan of control-point extremes). This gives the authoritative ink
+/// bounding box for TrueType glyph table glyphs. For CFF glyphs the value is
+/// computed from the contours by the parser.
+///
+/// # Usage
+/// ```no_run
+/// use oxifont_parser::ParsedFace;
+///
+/// let bytes = std::fs::read("/path/to/font.ttf").expect("font file");
+/// let face = ParsedFace::parse(bytes, 0).expect("parse");
+/// if let Some(data) = face.outline_with_bbox('A' as u16) {
+///     let scale = 24.0 / face.units_per_em() as f32;
+///     let ink_w = (data.x_max - data.x_min) as f32 * scale;
+///     let ink_h = (data.y_max - data.y_min) as f32 * scale;
+///     println!("ink box at 24 px: {ink_w:.1} × {ink_h:.1}");
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlyphOutlineData {
+    /// Ordered sequence of path commands making up the glyph contours.
+    pub commands: Vec<GlyphOutline>,
+    /// Left edge of the ink bounding box, in design units.
+    pub x_min: i16,
+    /// Bottom edge of the ink bounding box, in design units.
+    pub y_min: i16,
+    /// Right edge of the ink bounding box, in design units.
+    pub x_max: i16,
+    /// Top edge of the ink bounding box, in design units.
+    pub y_max: i16,
+    /// Horizontal advance width in design units (from the `hmtx` table).
+    ///
+    /// `None` when the glyph ID is out of range for the `hmtx` table.
+    pub advance_width: Option<u16>,
+    /// Left-side bearing in design units (from the `hmtx` table), if available.
+    pub lsb: Option<i16>,
+}
 
 /// Returns the number of font faces inside a TrueType collection.
 ///
@@ -752,6 +806,67 @@ impl ParsedFace {
     }
 
     // -----------------------------------------------------------------------
+    // outline_with_bbox — rich outline data for direct rasterisation
+    // -----------------------------------------------------------------------
+
+    /// Returns the glyph outline for `gid` together with the authoritative ink
+    /// bounding box and horizontal metrics, suitable for direct path rasterisation
+    /// without fontdue or any third-party hinting library.
+    ///
+    /// Unlike [`FontFace::outline`] which returns only the raw path commands,
+    /// this method also provides:
+    ///
+    /// - `x_min`, `y_min`, `x_max`, `y_max` — the bounding box in design units
+    ///   as reported by the font's own glyph table (more accurate than scanning
+    ///   the control points of a bezier curve).
+    /// - `advance_width` — horizontal advance from the `hmtx` table.
+    /// - `lsb` — left-side bearing from the `hmtx` table.
+    ///
+    /// Returns `None` when:
+    ///
+    /// - The underlying face cannot be re-parsed (should never happen for a
+    ///   successfully constructed `ParsedFace`).
+    /// - The glyph at `gid` has no outline (e.g. a whitespace character such as
+    ///   U+0020).
+    ///
+    /// All coordinates are in font design units; scale by
+    /// `font_size_px / face.units_per_em()` to convert to pixel coordinates.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use oxifont_parser::ParsedFace;
+    /// use oxifont_core::FontFace as _;
+    ///
+    /// let bytes = std::fs::read("/path/to/font.ttf").expect("font file");
+    /// let face = ParsedFace::parse(bytes, 0).expect("parse");
+    /// let gid = face.glyph_for_char('A').unwrap_or(0);
+    /// if let Some(data) = face.outline_with_bbox(gid) {
+    ///     let scale = 24.0 / face.units_per_em() as f32;
+    ///     let width = (data.x_max - data.x_min) as f32 * scale;
+    ///     let height = (data.y_max - data.y_min) as f32 * scale;
+    ///     println!("'A' ink box at 24 px: {width:.1}w × {height:.1}h");
+    ///     println!("path commands: {}", data.commands.len());
+    /// }
+    /// ```
+    pub fn outline_with_bbox(&self, gid: u16) -> Option<GlyphOutlineData> {
+        self.with_face(|face| {
+            let mut collector = OutlineCollector::new();
+            let rect = face.outline_glyph(ttf_parser::GlyphId(gid), &mut collector)?;
+            let advance_width = face.glyph_hor_advance(ttf_parser::GlyphId(gid));
+            let lsb = face.glyph_hor_side_bearing(ttf_parser::GlyphId(gid));
+            Some(GlyphOutlineData {
+                commands: collector.commands,
+                x_min: rect.x_min,
+                y_min: rect.y_min,
+                x_max: rect.x_max,
+                y_max: rect.y_max,
+                advance_width,
+                lsb,
+            })
+        })
+    }
+
+    // -----------------------------------------------------------------------
     // Builder entry point
     // -----------------------------------------------------------------------
 
@@ -1094,5 +1209,81 @@ impl FontFace for ParsedFace {
 
     fn vertical_advance(&self, gid: u16) -> Option<u16> {
         self.with_face(|f| f.glyph_ver_advance(ttf_parser::GlyphId(gid)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FontCapabilities implementation — GSUB/GPOS feature data for complex shaping
+// ---------------------------------------------------------------------------
+
+/// Implementation of [`FontCapabilities`] for [`ParsedFace`].
+///
+/// Provides oxitext-shape and other consumers with GSUB and GPOS feature tags,
+/// supported OpenType script tags, and language-system tags without requiring
+/// the caller to hand-parse the raw table data.
+///
+/// All methods delegate to the already-implemented `ParsedFace` helper methods
+/// (`gsub_feature_tags`, `gpos_feature_tags`, `supported_scripts`,
+/// `supported_languages`) that parse the relevant GSUB/GPOS table sections on
+/// demand from the borrowed byte buffer.
+///
+/// # Example
+/// ```no_run
+/// use oxifont_parser::ParsedFace;
+/// use oxifont_core::FontCapabilities as _;
+///
+/// let bytes = std::fs::read("/path/to/font.ttf").expect("font file");
+/// let face = ParsedFace::parse(bytes, 0).expect("parse");
+///
+/// if face.has_feature(*b"liga") {
+///     println!("font supports standard ligatures");
+/// }
+/// if face.has_feature(*b"kern") {
+///     println!("font has kerning via GPOS");
+/// }
+/// let scripts = face.supported_scripts();
+/// println!("supported scripts: {}", scripts.len());
+/// ```
+impl FontCapabilities for ParsedFace {
+    /// Returns the OpenType feature tags listed in the GSUB FeatureList.
+    ///
+    /// Feature tags are four-byte identifiers (e.g. `b"liga"`, `b"calt"`)
+    /// that identify substitution features the font implements. Returns an
+    /// empty `Vec` when the GSUB table is absent or its data is malformed.
+    fn gsub_features(&self) -> Vec<[u8; 4]> {
+        self.gsub_feature_tags()
+    }
+
+    /// Returns the OpenType feature tags listed in the GPOS FeatureList.
+    ///
+    /// Feature tags are four-byte identifiers (e.g. `b"kern"`, `b"mark"`)
+    /// that identify positioning features the font implements. Returns an
+    /// empty `Vec` when the GPOS table is absent or its data is malformed.
+    fn gpos_features(&self) -> Vec<[u8; 4]> {
+        self.gpos_feature_tags()
+    }
+
+    /// Returns the union of script tags present in GSUB and GPOS.
+    ///
+    /// Each `[u8; 4]` corresponds to an OpenType script tag (e.g. `b"latn"`,
+    /// `b"cyrl"`, `b"arab"`). Duplicate tags that appear in both tables are
+    /// deduplicated. Returns an empty `Vec` when neither table is present.
+    fn supported_scripts(&self) -> Vec<[u8; 4]> {
+        // Delegate to the same method on ParsedFace (not FontFace::supported_scripts
+        // which does not exist — this calls the inherent method).
+        ParsedFace::supported_scripts(self)
+    }
+
+    /// Returns the language-system tags for the given script in GSUB.
+    ///
+    /// Each `[u8; 4]` corresponds to an OpenType LangSys tag within `script`
+    /// (e.g. `b"TRK "` for Turkish within Latin). The default LangSys (if
+    /// any) is not included because it has no tag in the GSUB table format.
+    ///
+    /// Returns an empty `Vec` when `script` is not found, the GSUB table is
+    /// absent, or the data is malformed.
+    fn supported_languages(&self, script: [u8; 4]) -> Vec<[u8; 4]> {
+        // Delegate to the inherent method on ParsedFace.
+        ParsedFace::supported_languages(self, script)
     }
 }

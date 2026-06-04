@@ -17,13 +17,19 @@ oxifont-discovery = { workspace = true }
 serde             = { workspace = true, optional = true }
 serde_json        = { workspace = true, optional = true }
 dirs              = { workspace = true, optional = true }
+oxifont-db        = { workspace = true, optional = true }
+oxifont-subset    = { workspace = true, optional = true }
 
 [dev-dependencies]
-criterion = { workspace = true }
+criterion    = { workspace = true }
+oxifont-db   = { path = "../oxifont-db" }
+oxifont-subset = { path = "../oxifont-subset" }
 
 [features]
 default = []
 cache   = ["dep:serde", "dep:serde_json", "dep:dirs", "oxifont-core/serde"]
+db      = ["dep:oxifont-db"]
+subset  = ["dep:oxifont-subset"]
 
 [[bench]]
 name = "font_database_find"

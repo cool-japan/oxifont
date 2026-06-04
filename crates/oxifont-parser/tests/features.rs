@@ -1,7 +1,7 @@
 //! Integration tests for GSUB/GPOS feature-tag extraction, from_path, preload,
-//! and related `ParsedFace` methods added in the features round.
+//! FontCapabilities trait implementation, and related `ParsedFace` methods.
 
-use oxifont_core::FontFace as _;
+use oxifont_core::{FontCapabilities, FontFace as _};
 use oxifont_parser::ParsedFace;
 
 /// Fixture bytes compiled in at test time.
@@ -227,4 +227,113 @@ fn test_variation_settings_empty_by_default() {
         face.variation_settings().is_empty(),
         "variation_settings must be empty for a freshly parsed face"
     );
+}
+
+// ---------------------------------------------------------------------------
+// FontCapabilities trait implementation tests
+// ---------------------------------------------------------------------------
+
+/// Verify that `FontCapabilities::gsub_features` returns the same tags as
+/// the inherent `gsub_feature_tags` method (they must be identical).
+#[test]
+fn test_font_capabilities_gsub_features_matches_inherent() {
+    let face =
+        ParsedFace::parse(FIXTURE_BYTES.to_vec(), 0).expect("fixture TTF must parse without error");
+    let via_trait = face.gsub_features();
+    let via_inherent = face.gsub_feature_tags();
+    assert_eq!(
+        via_trait, via_inherent,
+        "FontCapabilities::gsub_features must return identical data to gsub_feature_tags"
+    );
+}
+
+/// Verify that `FontCapabilities::gpos_features` returns the same tags as
+/// the inherent `gpos_feature_tags` method.
+#[test]
+fn test_font_capabilities_gpos_features_matches_inherent() {
+    let face =
+        ParsedFace::parse(FIXTURE_BYTES.to_vec(), 0).expect("fixture TTF must parse without error");
+    let via_trait = face.gpos_features();
+    let via_inherent = face.gpos_feature_tags();
+    assert_eq!(
+        via_trait, via_inherent,
+        "FontCapabilities::gpos_features must return identical data to gpos_feature_tags"
+    );
+}
+
+/// Verify that `FontCapabilities::supported_scripts` returns the same tags as
+/// the inherent `supported_scripts` method.
+#[test]
+fn test_font_capabilities_supported_scripts_matches_inherent() {
+    let face =
+        ParsedFace::parse(FIXTURE_BYTES.to_vec(), 0).expect("fixture TTF must parse without error");
+    // Call through the trait via explicit UFCS to force vtable dispatch.
+    let via_trait: Vec<[u8; 4]> = <ParsedFace as FontCapabilities>::supported_scripts(&face);
+    // Inherent method
+    let via_inherent = face.supported_scripts();
+    assert_eq!(
+        via_trait, via_inherent,
+        "FontCapabilities::supported_scripts must match the inherent method"
+    );
+}
+
+/// Verify that `FontCapabilities::has_feature` returns `true` for features
+/// that are in GSUB and `false` for an invented tag.
+#[test]
+fn test_font_capabilities_has_feature() {
+    let face =
+        ParsedFace::parse(FIXTURE_BYTES.to_vec(), 0).expect("fixture TTF must parse without error");
+    // An invented tag must never appear.
+    assert!(
+        !face.has_feature(*b"ZZZZ"),
+        "invented tag ZZZZ must not be reported as present"
+    );
+    // Any GSUB feature the inherent method reports must also be reported by
+    // has_feature.
+    for tag in face.gsub_feature_tags() {
+        assert!(
+            face.has_feature(tag),
+            "has_feature must return true for GSUB feature {tag:?}"
+        );
+    }
+    // Same for GPOS features.
+    for tag in face.gpos_feature_tags() {
+        assert!(
+            face.has_feature(tag),
+            "has_feature must return true for GPOS feature {tag:?}"
+        );
+    }
+}
+
+/// Verify that `FontCapabilities::supported_languages` returns the same tags
+/// as the inherent `supported_languages` method for the Latin script.
+#[test]
+fn test_font_capabilities_supported_languages_via_trait() {
+    let face =
+        ParsedFace::parse(FIXTURE_BYTES.to_vec(), 0).expect("fixture TTF must parse without error");
+    // Explicit UFCS to force the FontCapabilities vtable path.
+    let via_trait: Vec<[u8; 4]> =
+        <ParsedFace as FontCapabilities>::supported_languages(&face, *b"latn");
+    let via_inherent = face.supported_languages(*b"latn");
+    assert_eq!(
+        via_trait, via_inherent,
+        "FontCapabilities::supported_languages must match inherent method for latn"
+    );
+}
+
+/// Verify `ParsedFace` is usable as `Box<dyn FontCapabilities>`.
+///
+/// This ensures the trait is object-safe when used through `ParsedFace`, which
+/// is important for downstream consumers (e.g. oxitext-shape) that may store
+/// a `Box<dyn FontCapabilities>` in a cache or shaper state.
+#[test]
+fn test_parsed_face_is_dyn_font_capabilities() {
+    let face =
+        ParsedFace::parse(FIXTURE_BYTES.to_vec(), 0).expect("fixture TTF must parse without error");
+    let boxed: Box<dyn oxifont_core::FontCapabilities> = Box::new(face);
+    // Calling through the vtable must not panic.
+    let _ = boxed.gsub_features();
+    let _ = boxed.gpos_features();
+    let _ = boxed.supported_scripts();
+    let _ = boxed.supported_languages(*b"latn");
 }

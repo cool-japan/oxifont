@@ -396,6 +396,101 @@ mod macos_tests {
             "face count should be identical after reload (before={count_before}, after={count_after})"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Native font fallback data for complex script coverage
+    // -----------------------------------------------------------------------
+
+    /// `load_fallback_font_bytes` must return non-empty font data for an
+    /// ASCII codepoint on any standard macOS system.
+    ///
+    /// The returned bytes must begin with a valid font magic number so that
+    /// downstream shaping engines can use them directly.
+    #[test]
+    fn test_load_fallback_font_bytes_ascii() {
+        use oxifont_adapter_native::load_fallback_font_bytes;
+
+        // ASCII 'A' is covered by every standard macOS font.
+        let result = load_fallback_font_bytes('A');
+        assert!(
+            result.is_some(),
+            "load_fallback_font_bytes must return Some for ASCII 'A' on macOS"
+        );
+
+        let bytes = result.expect("already checked Some");
+        assert!(
+            bytes.len() > 100,
+            "fallback font bytes must be non-trivially sized"
+        );
+
+        // Valid font magic: TrueType (0x00010000), CFF/OTF (OTTO), true, or ttcf.
+        let magic_ok = matches!(
+            bytes[..4],
+            [0x00, 0x01, 0x00, 0x00]
+                | [0x4F, 0x54, 0x54, 0x4F]
+                | [0x74, 0x72, 0x75, 0x65]
+                | [0x74, 0x74, 0x63, 0x66]
+        );
+        assert!(
+            magic_ok,
+            "fallback font bytes must start with a valid font magic: {:02X?}",
+            &bytes[..4]
+        );
+    }
+
+    /// `load_fallback_font_bytes_with_index` must return bytes and a valid
+    /// face_index (0 for non-TTC fonts; ≥ 0 for TTC).
+    #[test]
+    fn test_load_fallback_font_bytes_with_index_ascii() {
+        use oxifont_adapter_native::load_fallback_font_bytes_with_index;
+
+        let result = load_fallback_font_bytes_with_index('A');
+        assert!(
+            result.is_some(),
+            "load_fallback_font_bytes_with_index must return Some for ASCII 'A' on macOS"
+        );
+
+        let (bytes, face_index) = result.expect("already checked Some");
+        assert!(
+            bytes.len() > 100,
+            "fallback font bytes must be non-trivially sized"
+        );
+
+        // For TTC files the face_index must be < the sub-face count from the header.
+        // For TTF/OTF the face_index must be 0.
+        let is_ttc = matches!(bytes[..4], [0x74, 0x74, 0x63, 0x66]);
+        if is_ttc {
+            let sub_face_count = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+            assert!(
+                face_index < sub_face_count,
+                "TTC face_index {face_index} must be < sub_face_count {sub_face_count}"
+            );
+        } else {
+            assert_eq!(
+                face_index, 0,
+                "non-TTC font must have face_index = 0, got {face_index}"
+            );
+        }
+    }
+
+    /// `load_fallback_font_bytes` must return `Some` for a CJK codepoint
+    /// (U+4E2D '中') when a CJK font is installed.  On standard macOS systems
+    /// the PingFang / Hiragino font families cover this range.
+    ///
+    /// This test is advisory: it passes silently when no CJK font is found.
+    #[test]
+    fn test_load_fallback_font_bytes_cjk() {
+        use oxifont_adapter_native::load_fallback_font_bytes;
+
+        // U+4E2D is '中' (Chinese character for "middle").
+        if let Some(bytes) = load_fallback_font_bytes('\u{4E2D}') {
+            assert!(
+                bytes.len() > 100,
+                "CJK fallback font must be non-trivially sized"
+            );
+        }
+        // None is acceptable on a system without CJK fonts.
+    }
 }
 
 // ---------------------------------------------------------------------------

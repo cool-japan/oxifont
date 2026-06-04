@@ -598,6 +598,120 @@ pub fn find_font_for_codepoint(codepoint: char) -> Option<std::path::PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
+// Native font fallback data for complex script coverage
+// ---------------------------------------------------------------------------
+
+/// Load the raw font bytes of the first installed font that covers `codepoint`.
+///
+/// This function is the bridge between CoreText native font enumeration and
+/// shaping engines such as `oxitext-shape` that need raw font bytes for complex
+/// script coverage (Arabic, Indic, CJK, emoji, etc.).  It combines the path
+/// lookup performed by [`find_font_for_codepoint`] with an immediate
+/// `std::fs::read` of the resolved file, so the caller does not need to handle
+/// path-to-bytes conversion.
+///
+/// # Return value
+/// Returns `Some(bytes)` when a covering font is found **and** its file is
+/// readable.  Returns `None` when:
+/// * No system font covers `codepoint`.
+/// * CoreText enumeration fails.
+/// * The font file cannot be read (permissions, removed between enumerate and
+///   read, etc.).
+///
+/// # Performance note
+/// This function performs a full CoreText enumeration on every call.  For
+/// repeated queries callers should prefer building a [`NativeCatalog`] once and
+/// using [`NativeCatalog::load_face`] together with
+/// [`find_font_for_codepoint`].
+pub fn load_fallback_font_bytes(codepoint: char) -> Option<Vec<u8>> {
+    let path = find_font_for_codepoint(codepoint)?;
+    std::fs::read(&path).ok()
+}
+
+/// Load the raw font bytes and the face index of the first installed font that
+/// covers `codepoint`.
+///
+/// Returns `(bytes, face_index)` where `face_index` is the sub-face index
+/// within a TrueType Collection (`.ttc`), or `0` for plain `.ttf`/`.otf` files.
+/// The face index is needed by shaping engines that call `FontRef::from_index`
+/// (e.g. swash).
+///
+/// Returns `None` under the same conditions as [`load_fallback_font_bytes`].
+pub fn load_fallback_font_bytes_with_index(codepoint: char) -> Option<(Vec<u8>, u32)> {
+    // Enumerate the catalog to get both the path and face_index together.
+    let catalog = NativeCatalog::load().ok()?;
+
+    // UTF-32 scalar value for CFCharacterSetIsLongCharacterMember.
+    let scalar: u32 = codepoint as u32;
+
+    let collection = font_collection::create_for_all_families();
+    let descriptors: CFArray<CTFontDescriptor> = collection.get_descriptors()?;
+
+    for descriptor in descriptors.iter() {
+        let path = match descriptor.font_path() {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !matches!(ext.as_str(), "ttf" | "otf" | "ttc") {
+            continue;
+        }
+
+        // Materialise a temporary CTFont at size 0.
+        let ct_font: CTFont =
+            match std::panic::catch_unwind(move || new_from_descriptor(&descriptor, 0.0)) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+
+        // Copy the character set (+1 retained).
+        // SAFETY: ct_font.as_concrete_TypeRef() is a valid, non-null CTFontRef.
+        let cs_ref = unsafe {
+            CTFontCopyCharacterSet(ct_font.as_concrete_TypeRef() as *const std::ffi::c_void)
+        };
+        if cs_ref.is_null() {
+            continue;
+        }
+
+        // Transfer ownership to CFCharacterSet so Drop releases the +1 retain.
+        // SAFETY: cs_ref is a non-null +1 retained CFCharacterSetRef.
+        let char_set = unsafe { CFCharacterSet::wrap_under_create_rule(cs_ref) };
+
+        // Test membership.
+        // SAFETY: char_set.as_concrete_TypeRef() is a valid CFCharacterSetRef.
+        let is_member = unsafe {
+            core_foundation::characterset::CFCharacterSetIsLongCharacterMember(
+                char_set.as_concrete_TypeRef(),
+                scalar,
+            )
+        };
+
+        if is_member != 0 {
+            // Find the matching FaceInfo to get the correct face_index for TTC files.
+            if let Some(face_info) = catalog.faces().iter().find(|f| f.path == path) {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    return Some((bytes, face_info.face_index));
+                }
+            }
+        }
+    }
+
+    // Fallback: return the first indexed face bytes.
+    if let Some(face) = catalog.faces().first() {
+        if let Ok(bytes) = std::fs::read(&face.path) {
+            return Some((bytes, face.face_index));
+        }
+    }
+
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Task 3: register_font
 // ---------------------------------------------------------------------------
 

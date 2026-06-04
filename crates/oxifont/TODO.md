@@ -28,9 +28,9 @@ Facade crate re-exporting the OxiFont ecosystem. Re-exports `oxifont-core` types
 - [x] Test `system_with_native()` on macOS CI — `system_with_native_returns_faces_on_macos` + `native_catalog_load_face_bridge` in tests/facade.rs
 
 ## Performance
-- [ ] N/A (facade crate, performance lives in subcrates)
+- [x] N/A (facade crate, performance lives in subcrates)
 
 ## Integration
-- [ ] Serve as the single dependency for oxitext's font needs
-- [ ] Ensure API surface is stable enough for semver compatibility at 0.2.0
+- [x] Serve as the single dependency for oxitext's font needs — `oxitext` workspace depends on `oxifont` (db feature for shape, parser/bundled for raster/tests, subset for pdf_subset); `oxitext-shape` gains `native-fallback` feature pulling `oxifont-adapter-native::shaper_bridge` (2026-06-03)
+- [x] Ensure API surface is stable enough for semver compatibility at 0.2.0 — all public error enums (`FontError`, `SfntError`, `WebFontError`, `SubsetError`, `SubsetEncodeError`, `DbError`, `NativeError`) and `ColorGlyphFormat` annotated `#[non_exhaustive]`; downstream `match` arms require catch-all, preventing silent breakage from future variants (2026-06-03)
 - [x] Document the relationship between oxifont-core traits and oxifont-db types

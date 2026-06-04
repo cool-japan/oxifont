@@ -13,6 +13,39 @@
 //!   persist [`FaceInfo`] records; requires `oxifont-core/serde`. When enabled,
 //!   [`FontDatabase::system_cached`] and [`FontDatabase::scan_cached`] are
 //!   available.
+//! - `db`: Enable the bridge to [`oxifont_db`]. Adds [`FontDatabase::into_db`]
+//!   and [`FontDatabase::as_db`] which convert this catalog to an
+//!   [`oxifont_db::FontDatabase`] for CSS Fonts Level 4 matching via
+//!   [`oxifont_db::Query`].
+//!
+//! # Integration with oxitext
+//!
+//! [`FontDatabase`] can serve as the font backend for `oxitext`'s pipeline.
+//! The `oxitext::Pipeline::new(font_db)` constructor accepts an
+//! `&oxifont::FontDatabase` (which is a type alias for
+//! `oxifont_adapter_pure::FontDatabase` when using the `pure` Cargo feature).
+//!
+//! ```no_run
+//! use oxifont_adapter_pure::FontDatabase;
+//! use oxifont::FontDatabase as OxiFont;  // requires oxifont `pure` feature
+//! # // This block is only illustrative; oxitext is in a separate crate
+//! ```
+//!
+//! # Subsetting integration
+//!
+//! Use [`FontDatabase::font_bytes`] to retrieve raw SFNT bytes for a face,
+//! then pass them to `oxifont_subset::subset_font` for glyph subsetting:
+//!
+//! ```no_run
+//! use oxifont_adapter_pure::FontDatabase;
+//! use oxifont_core::FontCatalog as _;
+//!
+//! let db = FontDatabase::system().unwrap();
+//! if let Some(info) = db.faces().first() {
+//!     let bytes = db.font_bytes(info).unwrap();
+//!     // Pass `bytes` to `oxifont_subset::subset_font(&bytes, &codepoints)`.
+//! }
+//! ```
 //!
 //! # Example
 //! ```no_run
@@ -606,6 +639,31 @@ impl FontDatabase {
         ParsedFace::from_face_info(info)
     }
 
+    /// Returns the raw font file bytes for the face described by `info`.
+    ///
+    /// This method provides access to the raw SFNT bytes needed for subsetting
+    /// operations (e.g. via [`oxifont_subset::subset_font`]) or WOFF2 encoding.
+    /// It simply reads the file from disk — no parsing is performed.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use oxifont_adapter_pure::FontDatabase;
+    /// use oxifont_core::FontCatalog as _;
+    ///
+    /// let db = FontDatabase::system().unwrap();
+    /// if let Some(info) = db.faces().first() {
+    ///     let bytes = db.font_bytes(info).unwrap();
+    ///     println!("loaded {} bytes for {:?}", bytes.len(), info.path);
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns [`FontError::IoError`] if the file at `info.path` cannot be read.
+    pub fn font_bytes(&self, info: &FaceInfo) -> Result<Vec<u8>, FontError> {
+        std::fs::read(&info.path).map_err(FontError::from)
+    }
+
     // -----------------------------------------------------------------------
     // Fallback chain query
     // -----------------------------------------------------------------------
@@ -827,6 +885,177 @@ impl FontCatalog for FontDatabase {
 
             family_ok && style_ok && weight_ok && stretch_ok && ps_ok
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// oxifont-db bridge (feature = "db")
+// ---------------------------------------------------------------------------
+//
+// When the `db` feature is enabled, `FontDatabase` gains a conversion method
+// `into_db()` that migrates all `FaceInfo` records into an `oxifont_db::FontDatabase`,
+// enabling access to its CSS Level 4 query engine (`oxifont_db::Query`).
+//
+// The conversion uses the `From<oxifont_core::FaceInfo> for oxifont_db::FaceInfo`
+// bridge already provided by `oxifont-db/src/bridge.rs`, so each face record
+// round-trips without data loss for all fields that `oxifont-core::FaceInfo`
+// carries (family, weight, style, stretch, path, face_index).
+
+#[cfg(feature = "db")]
+impl FontDatabase {
+    /// Converts this catalog into an [`oxifont_db::FontDatabase`], enabling
+    /// full CSS Fonts Level 4 query access via [`oxifont_db::Query`].
+    ///
+    /// All face records currently stored in this catalog are converted to
+    /// [`oxifont_db::FaceInfo`] using the standard `From` bridge (see
+    /// `oxifont-db/src/bridge.rs`). The resulting database is independent of
+    /// this one — both can be used simultaneously.
+    ///
+    /// # CSS Level 4 queries after conversion
+    ///
+    /// ```no_run
+    /// use oxifont_adapter_pure::FontDatabase;
+    /// use oxifont_db::Query;
+    ///
+    /// let pure_db = FontDatabase::system().unwrap();
+    /// let db = pure_db.into_db();
+    ///
+    /// if let Some(face) = Query::new(&db)
+    ///     .family("sans-serif")
+    ///     .weight(700)
+    ///     .italic(false)
+    ///     .match_best()
+    /// {
+    ///     println!("CSS match: {} weight={}", face.family, face.weight);
+    /// }
+    /// ```
+    pub fn into_db(self) -> oxifont_db::FontDatabase {
+        let mut db = oxifont_db::FontDatabase::new();
+        for face in self.faces {
+            let db_face = oxifont_db::FaceInfo::from(face);
+            db.add_face(db_face);
+        }
+        db
+    }
+
+    /// Produces an [`oxifont_db::FontDatabase`] from a reference to this
+    /// catalog, cloning each face record during conversion.
+    ///
+    /// Prefer [`FontDatabase::into_db`] when the pure database is no longer
+    /// needed after the conversion.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use oxifont_adapter_pure::FontDatabase;
+    ///
+    /// let pure_db = FontDatabase::system().unwrap();
+    /// let db = pure_db.as_db();
+    /// // `pure_db` remains usable.
+    /// println!("{} faces in CSS db", db.stats().face_count);
+    /// ```
+    pub fn as_db(&self) -> oxifont_db::FontDatabase {
+        let mut db = oxifont_db::FontDatabase::new();
+        for face in &self.faces {
+            let db_face = oxifont_db::FaceInfo::from(face);
+            db.add_face(db_face);
+        }
+        db
+    }
+}
+
+// ---------------------------------------------------------------------------
+// oxifont-subset bridge (feature = "subset")
+// ---------------------------------------------------------------------------
+//
+// When the `subset` feature is enabled, `FontDatabase` gains two convenience
+// methods that chain `font_bytes()` with the `oxifont_subset` subsetting
+// pipeline:
+//
+//   - `subset_face(info, codepoints)` — subset with default options.
+//   - `subset_face_for_web(info, codepoints)` — subset with web-friendly
+//     presets (hints stripped, names trimmed).
+//
+// These methods provide font data access for `oxifont-subset` operations
+// without requiring callers to explicitly read file bytes or import the
+// `oxifont_subset` crate directly.
+
+#[cfg(feature = "subset")]
+impl FontDatabase {
+    /// Reads the font file described by `info`, subsets it to the given
+    /// `codepoints`, and returns the resulting SFNT bytes.
+    ///
+    /// This is a convenience wrapper around [`FontDatabase::font_bytes`] +
+    /// [`oxifont_subset::subset_font`]. It uses the default [`oxifont_subset::SubsetOptions`]:
+    /// hints are retained, layout tables (`GSUB`/`GPOS`/`GDEF`) are kept, and
+    /// the full `name` table is preserved.
+    ///
+    /// Use [`subset_face_for_web`](Self::subset_face_for_web) for a
+    /// web-optimised preset (strip hints, trim name table).
+    ///
+    /// # Errors
+    /// - [`FontError::IoError`] if the font file cannot be read.
+    /// - [`FontError::ParseError`] if the font bytes are structurally invalid
+    ///   or subsetting fails.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use oxifont_adapter_pure::FontDatabase;
+    /// use oxifont_core::FontCatalog as _;
+    /// use std::collections::BTreeSet;
+    ///
+    /// let db = FontDatabase::system().unwrap();
+    /// if let Some(info) = db.faces().first() {
+    ///     let cps: BTreeSet<char> = "Hello, world!".chars().collect();
+    ///     let subset_bytes = db.subset_face(info, &cps).unwrap();
+    ///     println!("subset: {} bytes", subset_bytes.len());
+    /// }
+    /// ```
+    pub fn subset_face(
+        &self,
+        info: &FaceInfo,
+        codepoints: &std::collections::BTreeSet<char>,
+    ) -> Result<Vec<u8>, FontError> {
+        let bytes = self.font_bytes(info)?;
+        oxifont_subset::subset_font(&bytes, codepoints)
+            .map_err(|e| FontError::ParseError(format!("subset failed: {e}")))
+    }
+
+    /// Reads the font file described by `info`, subsets it to the given
+    /// `codepoints` using web-optimised presets, and returns the resulting
+    /// SFNT bytes.
+    ///
+    /// Equivalent to [`subset_face`](Self::subset_face) but with
+    /// `strip_hints = true` and `retain_names = false` — suitable for web
+    /// fonts where hint data is rarely beneficial and name records inflate the
+    /// download size.
+    ///
+    /// # Errors
+    /// - [`FontError::IoError`] if the font file cannot be read.
+    /// - [`FontError::ParseError`] if the font bytes are structurally invalid
+    ///   or subsetting fails.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use oxifont_adapter_pure::FontDatabase;
+    /// use oxifont_core::FontCatalog as _;
+    /// use std::collections::BTreeSet;
+    ///
+    /// let db = FontDatabase::system().unwrap();
+    /// if let Some(info) = db.faces().first() {
+    ///     let cps: BTreeSet<char> = "Hello".chars().collect();
+    ///     let web_bytes = db.subset_face_for_web(info, &cps).unwrap();
+    ///     println!("web-subset: {} bytes", web_bytes.len());
+    /// }
+    /// ```
+    pub fn subset_face_for_web(
+        &self,
+        info: &FaceInfo,
+        codepoints: &std::collections::BTreeSet<char>,
+    ) -> Result<Vec<u8>, FontError> {
+        let bytes = self.font_bytes(info)?;
+        oxifont_subset::subset_font_for_web(&bytes, codepoints)
+            .map_err(|e| FontError::ParseError(format!("subset_for_web failed: {e}")))
     }
 }
 

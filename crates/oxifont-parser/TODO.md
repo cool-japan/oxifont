@@ -34,7 +34,7 @@ Wraps `ttf_parser` with owned byte storage (`Arc<[u8]>`) so `ParsedFace` outlive
 - [x] Test error paths: truncated data, invalid magic bytes, out-of-range face index
 - [x] Benchmark `ParsedFace::parse()` overhead and caching strategies (2026-05-27)
 - [x] Test PostScript name extraction
-- [ ] Add fuzzing target for `ParsedFace::parse` with arbitrary byte input
+- [x] Add fuzzing target for `ParsedFace::parse` with arbitrary byte input — `fuzz/` infrastructure added (2026-06-03): fuzz_parse.rs (parse+trait methods), fuzz_face_methods.rs (outline/kern/axes/features). Both use libfuzzer-sys.
 
 ## Performance
 - [x] Cache the `ttf_parser::Face` inside `ParsedFace` instead of re-parsing on every `with_face()` call (measure memory vs. speed tradeoff) (~40 SLOC)
@@ -47,5 +47,5 @@ Wraps `ttf_parser` with owned byte storage (`Arc<[u8]>`) so `ParsedFace` outlive
   - **Design:** `ParsedFace::with_table_map<R, F: FnOnce(&SfntTableMap) -> R>(&self, f: F) -> Result<R, SfntError>` — re-parses SFNT header on demand via `oxifont_core::sfnt::SfntTableMap::parse(&self.raw_data)`. Cheap to call; allows downstream consumers to get zero-copy table slices without a full re-parse.
   - **Files:** `src/lib.rs`.
   - **Tests:** Extend an existing test in `tests/parse.rs` to call `with_table_map` and assert `SfntTableMap` exposes `head`, `cmap`, `glyf` tables.
-- [ ] Provide outline data for oxitext-raster to enable direct path rasterization without fontdue
-- [ ] Provide GSUB/GPOS feature data for oxitext-shape complex script shaping
+- [x] Provide outline data for oxitext-raster to enable direct path rasterization without fontdue — `GlyphOutlineData` + `outline_with_bbox()` expose path commands, ink bbox, advance width, and LSB; `FontFace::outline()` consumed by `OxifontRaster` in `oxitext-raster/src/oxifont_backend.rs` via `oxifont-backend` feature (2026-06-03)
+- [x] Provide GSUB/GPOS feature data for oxitext-shape complex script shaping — `FontCapabilities` trait implemented on `ParsedFace`: `gsub_features()`, `gpos_features()`, `supported_scripts()`, `supported_languages()`, `has_feature()`; also exposed as `Box<dyn FontCapabilities>` for downstream consumers (2026-06-03)

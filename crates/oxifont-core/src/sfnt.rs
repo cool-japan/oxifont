@@ -25,7 +25,11 @@
 use alloc::collections::BTreeMap;
 
 /// Error type for SFNT parsing failures.
+///
+/// This enum is `#[non_exhaustive]`: downstream `match` expressions must include
+/// a catch-all arm so that new error variants can be added in minor versions.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum SfntError {
     /// The data buffer is too short to contain a valid SFNT header or directory.
     Truncated,

@@ -552,6 +552,109 @@ impl FontDatabase {
             .get(name)
             .and_then(|&idx| self.faces.get(idx))
     }
+
+    // ------------------------------------------------------------------
+    // Locale-aware family enumeration
+    // ------------------------------------------------------------------
+
+    /// Returns all distinct locale-specific family names available in the
+    /// database for the given BCP-47 locale tag.
+    ///
+    /// This is the primary integration point for locale-aware rendering
+    /// pipelines (e.g. `oxitext-icu`): given a locale such as `"ja-JP"` or
+    /// `"zh-CN"`, callers receive an ordered, deduplicated list of the family
+    /// names that fonts in the database advertise for that locale via their
+    /// OpenType `name` table records.
+    ///
+    /// The BCP-47 tag is matched against the Windows LCID table in
+    /// [`crate::locale`].  If the full tag has no entry (e.g. `"ja-JP-x-example"`),
+    /// the function progressively strips trailing subtags (`"ja-JP"`, then `"ja"`)
+    /// until a match is found or the tag is exhausted.
+    ///
+    /// Returns an empty `Vec` when no faces carry locale metadata for `bcp47`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use oxifont_db::FontDatabase;
+    ///
+    /// let db = FontDatabase::system().unwrap();
+    /// for family in db.locale_families_for("ja-JP") {
+    ///     println!("Japanese family: {family}");
+    /// }
+    /// ```
+    pub fn locale_families_for(&self, bcp47: &str) -> Vec<String> {
+        // Resolve the LCID, trying progressively shorter subtags.
+        let bcp47_lower = bcp47.to_lowercase();
+        let lcid = {
+            let mut tag: &str = &bcp47_lower;
+            let mut found = None;
+            loop {
+                if let Some(id) = crate::locale::bcp47_to_lcid(tag) {
+                    found = Some(id);
+                    break;
+                }
+                match tag.rfind('-') {
+                    Some(pos) => tag = &tag[..pos],
+                    None => break,
+                }
+            }
+            found
+        };
+
+        let Some(lcid) = lcid else {
+            return Vec::new();
+        };
+
+        // Collect distinct family names for the resolved LCID.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut families: Vec<String> = Vec::new();
+        for face in &self.faces {
+            for (id, name) in &face.locale_families {
+                if *id == lcid && seen.insert(name.clone()) {
+                    families.push(name.clone());
+                }
+            }
+        }
+        families
+    }
+
+    /// Returns all faces in the database that support the given OpenType
+    /// script tag, as determined by the OS/2 Unicode range bits.
+    ///
+    /// This is the integration point for per-script font selection in
+    /// `oxitext-shape`: given a script tag such as `b"arab"`, `b"deva"`, or
+    /// `b"hani"`, callers receive all faces whose `supported_scripts_approx`
+    /// includes that tag.
+    ///
+    /// Coverage is **approximate** (derived from OS/2 range bits).  Faces
+    /// whose `unicode_ranges` is `0` (unknown) are included because they may
+    /// cover the requested script.
+    ///
+    /// Returns an empty slice when no faces match.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use oxifont_db::FontDatabase;
+    ///
+    /// let db = FontDatabase::system().unwrap();
+    /// for face in db.faces_for_script(b"arab") {
+    ///     println!("Arabic-capable font: {}", face.family);
+    /// }
+    /// ```
+    pub fn faces_for_script(&self, script_tag: &[u8; 4]) -> Vec<&FaceInfo> {
+        self.faces
+            .iter()
+            .filter(|face| {
+                // Faces with unknown ranges are included conservatively.
+                if face.unicode_ranges == 0 {
+                    return true;
+                }
+                face.supported_scripts_approx()
+                    .iter()
+                    .any(|t| t == script_tag)
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------

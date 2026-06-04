@@ -11,6 +11,10 @@ use std::sync::Arc;
 /// underlying [`std::io::Error`] in an [`Arc`] so that it can be cheaply
 /// cloned without copying OS error state.
 ///
+/// This enum is `#[non_exhaustive]`: downstream `match` expressions must include
+/// a catch-all arm (`_ => ...`) so that future variants can be added in minor
+/// versions without a semver break.
+///
 /// # Example
 /// ```
 /// use oxifont_core::FontError;
@@ -25,6 +29,7 @@ use std::sync::Arc;
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
 pub enum FontError {
     /// The font bytes could not be parsed.
     ParseError(alloc::string::String),

@@ -20,10 +20,12 @@ pub mod streaming;
 
 pub use streaming::decode_streaming;
 
+use std::borrow::Cow;
+
 use oxiarc_brotli::decompress;
 
 use crate::error::WebFontError;
-use crate::sfnt::{build_sfnt, detect_sfnt_version};
+use crate::sfnt::{build_sfnt, build_sfnt_cow, detect_sfnt_version_cow};
 
 use header::{parse_header, parse_table_directory, read_255_u16_slice, Woff2TableEntry};
 use hmtx::{extract_glyf_xmins, reconstruct_hmtx};
@@ -31,8 +33,13 @@ use hmtx::{extract_glyf_xmins, reconstruct_hmtx};
 /// (glyf table bytes, loca table bytes, loca offsets for hmtx xMin lookup).
 type GlyfLocaResult = (Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u32>>);
 
-/// List of (4-byte tag, table data) pairs forming a decoded SFNT.
+/// List of (4-byte tag, owned table data) pairs forming a decoded SFNT.
+/// Used as the public/streaming API surface.
 type TableList = Vec<([u8; 4], Vec<u8>)>;
+
+/// Cow-based table list; allows non-transformed tables to borrow from the
+/// decompressed buffer without an extra copy.
+type CowTableList<'a> = Vec<([u8; 4], Cow<'a, [u8]>)>;
 
 /// WOFF2 `ttcf` flavor: indicates a TrueType Collection (font collection).
 const WOFF2_COLLECTION_FLAVOR: u32 = 0x7474_6366; // b"ttcf"
@@ -91,17 +98,18 @@ pub fn decode_with_metadata(data: &[u8]) -> Result<(Vec<u8>, Option<String>), We
     let font_data =
         decompress(compressed_data).map_err(|e| WebFontError::DecompressError(e.to_string()))?;
 
-    // Distribute decompressed bytes to tables.
-    // We need to extract glyf/loca transform data and hmtx transform data separately.
-    let tables = extract_and_transform_tables(&dir, &font_data)?;
+    // Distribute decompressed bytes to tables using the zero-copy Cow path:
+    // non-transformed tables borrow directly from `font_data` (the decompressed
+    // buffer), while transformed tables (glyf/loca/hmtx) carry owned Vecs.
+    let tables = extract_and_transform_tables_cow(&dir, &font_data)?;
 
     let sfnt_version = if hdr.sf_version == 0x0001_0000 || hdr.sf_version == 0x4F54_544F {
         hdr.sf_version
     } else {
-        detect_sfnt_version(&tables)
+        detect_sfnt_version_cow(&tables)
     };
 
-    let sfnt = build_sfnt(sfnt_version, &tables)?;
+    let sfnt = build_sfnt_cow(sfnt_version, &tables)?;
 
     // Extract metadata block (brotli-compressed XML, WOFF2 spec §6).
     let metadata = extract_woff2_metadata(data, meta_offset, meta_length)?;
@@ -597,6 +605,153 @@ pub(crate) fn extract_and_transform_tables(
 
             let hmtx = reconstruct_hmtx(hmtx_data, num_glyphs, num_h_metrics, &glyf_xmins)?;
             tables.push((*b"hmtx", hmtx));
+        }
+    }
+
+    // Sort by tag for maximum interoperability.
+    tables.sort_by_key(|(tag, _)| *tag);
+
+    Ok(tables)
+}
+
+/// Zero-copy variant of [`extract_and_transform_tables`].
+///
+/// Non-transformed tables are returned as `Cow::Borrowed` slices that point
+/// into `font_data`, eliminating one `Vec<u8>` allocation per table.  Only
+/// reconstructed (glyf, loca, hmtx) tables carry `Cow::Owned` data.
+///
+/// This path is used by `decode_with_metadata` (and therefore `decode`) to
+/// reduce allocations in the hot decode path.
+fn extract_and_transform_tables_cow<'a>(
+    dir: &[Woff2TableEntry],
+    font_data: &'a [u8],
+) -> Result<CowTableList<'a>, WebFontError> {
+    // First pass: assign raw slices from font_data to each table.
+    let mut raw_slices: Vec<(&'a [u8], &Woff2TableEntry)> = Vec::with_capacity(dir.len());
+    let mut offset = 0usize;
+
+    for entry in dir {
+        let len = entry.transform_length as usize;
+        let slice = font_data
+            .get(offset..offset + len)
+            .ok_or(WebFontError::OutOfBounds {
+                context: "table slice in decompressed data",
+            })?;
+        raw_slices.push((slice, entry));
+        offset = offset
+            .checked_add(len)
+            .ok_or(WebFontError::Overflow("table offset in decompressed data"))?;
+    }
+
+    // Locate glyf and loca entries (needed together for the transform).
+    let glyf_raw = raw_slices.iter().find(|(_, e)| &e.tag == b"glyf");
+    let loca_raw = raw_slices.iter().find(|(_, e)| &e.tag == b"loca");
+
+    let has_glyf_transform = glyf_raw.is_some_and(|(_, e)| e.is_transformed());
+    let has_loca_transform = loca_raw.is_some_and(|(_, e)| e.is_transformed());
+
+    // Reconstruct glyf+loca if transformed.
+    let (glyf_table, loca_table, glyf_loca_offsets): GlyfLocaResult = if has_glyf_transform {
+        let (glyf_data, _) =
+            glyf_raw.ok_or(WebFontError::Unsupported("glyf transform without glyf"))?;
+        let reconstructed = glyf::reconstruct_glyf_loca(glyf_data)?;
+        let offsets = loca_offsets_from_loca(&reconstructed.loca, reconstructed.index_format)?;
+        Ok::<GlyfLocaResult, WebFontError>((
+            Some(reconstructed.glyf),
+            Some(reconstructed.loca),
+            Some(offsets),
+        ))
+    } else {
+        // No transform: glyf/loca stay as borrows — no allocation.
+        Ok::<GlyfLocaResult, WebFontError>((None, None, None))
+    }?;
+
+    // Locate hmtx transform if any.
+    let hmtx_entry = raw_slices.iter().find(|(_, e)| &e.tag == b"hmtx");
+    let has_hmtx_transform = hmtx_entry.is_some_and(|(_, e)| e.is_transformed());
+
+    // We need hhea.numberOfHMetrics and maxp.numGlyphs for hmtx reconstruction.
+    let (num_h_metrics, num_glyphs): (u16, u16) = if has_hmtx_transform {
+        let hhea_bytes = raw_slices
+            .iter()
+            .find(|(_, e)| &e.tag == b"hhea")
+            .map(|(d, _)| *d);
+        let maxp_bytes = raw_slices
+            .iter()
+            .find(|(_, e)| &e.tag == b"maxp")
+            .map(|(d, _)| *d);
+
+        let nhm = hhea_bytes
+            .and_then(|d| d.get(34..36))
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+            .unwrap_or(0);
+        let ng = maxp_bytes
+            .and_then(|d| d.get(4..6))
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+            .unwrap_or(0);
+
+        (nhm, ng)
+    } else {
+        (0, 0)
+    };
+
+    // Build final table list using Cow — borrow non-transformed tables, own the rest.
+    let mut tables: CowTableList<'a> = Vec::with_capacity(dir.len());
+
+    for (raw, entry) in &raw_slices {
+        let tag = entry.tag;
+
+        // Skip glyf+loca when we have a transformed (owned) version.
+        if has_glyf_transform && (&tag == b"glyf" || &tag == b"loca") {
+            continue;
+        }
+        if has_loca_transform && &tag == b"loca" && !has_glyf_transform {
+            continue;
+        }
+        if has_hmtx_transform && &tag == b"hmtx" {
+            continue;
+        }
+
+        // Non-transformed: borrow from font_data — zero allocation.
+        tables.push((tag, Cow::Borrowed(raw)));
+    }
+
+    // Insert reconstructed glyf+loca (owned).
+    if has_glyf_transform {
+        if let Some(glyf) = glyf_table {
+            tables.push((*b"glyf", Cow::Owned(glyf)));
+        }
+        if let Some(loca) = loca_table {
+            tables.push((*b"loca", Cow::Owned(loca)));
+        }
+    }
+
+    // Insert reconstructed hmtx (owned).
+    if has_hmtx_transform {
+        if let Some((hmtx_data, _)) = hmtx_entry {
+            // For hmtx reconstruction we may need glyf xMins; if glyf was also
+            // transformed we can look it up in the Cow table list we just built.
+            let glyf_borrowed: Option<&[u8]> = if has_glyf_transform {
+                tables
+                    .iter()
+                    .find(|(t, _)| t == b"glyf")
+                    .map(|(_, d)| d.as_ref())
+            } else {
+                raw_slices
+                    .iter()
+                    .find(|(_, e)| &e.tag == b"glyf")
+                    .map(|(d, _)| *d)
+            };
+
+            let glyf_xmins: Vec<i16> = match (&glyf_loca_offsets, glyf_borrowed) {
+                (Some(offsets), Some(glyf_bytes)) => {
+                    extract_glyf_xmins(glyf_bytes, offsets, num_glyphs)
+                }
+                _ => vec![0i16; num_glyphs as usize],
+            };
+
+            let hmtx = reconstruct_hmtx(hmtx_data, num_glyphs, num_h_metrics, &glyf_xmins)?;
+            tables.push((*b"hmtx", Cow::Owned(hmtx)));
         }
     }
 

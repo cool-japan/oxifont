@@ -165,11 +165,15 @@ impl BundledFont {
 
     /// Parse this font's bytes into a [`ParsedFace`].
     ///
+    /// When the `compressed` feature is enabled and font data is stored as
+    /// zlib/DEFLATE-compressed bytes, this method decompresses the data first
+    /// before parsing.
+    ///
     /// # Errors
     /// Returns [`FontError::ParseError`] if the embedded bytes are not a valid
-    /// TTF/OTF font. This should not happen for the constants shipped by this
-    /// crate but can occur with synthetic test entries that carry placeholder
-    /// bytes.
+    /// TTF/OTF font, or if decompression fails (compressed feature only).
+    /// This should not happen for the constants shipped by this crate but can
+    /// occur with synthetic test entries that carry placeholder bytes.
     ///
     /// # Example
     /// ```ignore
@@ -180,15 +184,16 @@ impl BundledFont {
     /// assert!(!face.family_name().is_empty());
     /// ```
     pub fn parse(&self) -> Result<ParsedFace, FontError> {
-        ParsedFace::parse(self.data, 0).map_err(|e| FontError::ParseError(e.to_string()))
+        let bytes = crate::compressed::decompress_font(self.data)?;
+        ParsedFace::parse(&*bytes, 0).map_err(|e| FontError::ParseError(e.to_string()))
     }
 
     /// Return a lazily-parsed [`ParsedFace`] wrapped in an [`Arc`], cached for
     /// the lifetime of this static instance.
     ///
-    /// On the first call the font bytes are parsed into a `ParsedFace` and the
-    /// result is stored inside this descriptor's [`OnceLock`]. Subsequent calls
-    /// clone the cached `Arc` without re-parsing.
+    /// On the first call the font bytes are (optionally) decompressed and parsed
+    /// into a `ParsedFace`; the result is stored inside this descriptor's
+    /// [`OnceLock`]. Subsequent calls clone the cached `Arc` without re-parsing.
     ///
     /// Because the bundled font data is always valid (it is compiled into the
     /// binary via `include_bytes!`), a parse failure is treated as a panic
@@ -211,7 +216,9 @@ impl BundledFont {
     /// ```
     pub fn parsed_face(&self) -> Result<Arc<ParsedFace>, FontError> {
         let arc = self.parsed.get_or_init(|| {
-            let face = ParsedFace::parse(self.data, 0)
+            let bytes = crate::compressed::decompress_font(self.data)
+                .unwrap_or_else(|e| panic!("bundled font decompression failed: {e}"));
+            let face = ParsedFace::parse(&*bytes, 0)
                 .unwrap_or_else(|e| panic!("bundled font parse failed: {e}"));
             Arc::new(face)
         });
@@ -380,10 +387,15 @@ impl FontCatalog for BundledCatalog {
 ///
 /// Licensed under the SIL Open Font License 1.1.
 /// Bytes embedded from `../fonts/NotoSans-Regular.ttf`.
+/// When the `compressed` feature is enabled, the bytes are zlib-compressed
+/// (pre-compressed by `build.rs`).
 #[cfg(feature = "bundled-noto")]
 pub static SANS_REGULAR: BundledFont = BundledFont {
     family: "Noto Sans",
     postscript_name: "NotoSans-Regular",
+    #[cfg(feature = "compressed")]
+    data: include_bytes!(concat!(env!("OUT_DIR"), "/NotoSans-Regular.ttf.z")),
+    #[cfg(not(feature = "compressed"))]
     data: include_bytes!("../fonts/NotoSans-Regular.ttf"),
     weight: 400,
     style: FontStyle::Normal,
@@ -396,10 +408,15 @@ pub static SANS_REGULAR: BundledFont = BundledFont {
 ///
 /// Licensed under the SIL Open Font License 1.1.
 /// Bytes embedded from `../fonts/NotoSans-Bold.ttf`.
+/// When the `compressed` feature is enabled, the bytes are zlib-compressed
+/// (pre-compressed by `build.rs`).
 #[cfg(feature = "bundled-noto")]
 pub static SANS_BOLD: BundledFont = BundledFont {
     family: "Noto Sans",
     postscript_name: "NotoSans-Bold",
+    #[cfg(feature = "compressed")]
+    data: include_bytes!(concat!(env!("OUT_DIR"), "/NotoSans-Bold.ttf.z")),
+    #[cfg(not(feature = "compressed"))]
     data: include_bytes!("../fonts/NotoSans-Bold.ttf"),
     weight: 700,
     style: FontStyle::Normal,
@@ -412,10 +429,15 @@ pub static SANS_BOLD: BundledFont = BundledFont {
 ///
 /// Licensed under the SIL Open Font License 1.1.
 /// Bytes embedded from `../fonts/NotoSerif-Regular.ttf`.
+/// When the `compressed` feature is enabled, the bytes are zlib-compressed
+/// (pre-compressed by `build.rs`).
 #[cfg(feature = "bundled-noto")]
 pub static SERIF_REGULAR: BundledFont = BundledFont {
     family: "Noto Serif",
     postscript_name: "NotoSerif-Regular",
+    #[cfg(feature = "compressed")]
+    data: include_bytes!(concat!(env!("OUT_DIR"), "/NotoSerif-Regular.ttf.z")),
+    #[cfg(not(feature = "compressed"))]
     data: include_bytes!("../fonts/NotoSerif-Regular.ttf"),
     weight: 400,
     style: FontStyle::Normal,
@@ -431,10 +453,15 @@ pub static SERIF_REGULAR: BundledFont = BundledFont {
 ///
 /// Licensed under the SIL Open Font License 1.1.
 /// Bytes embedded from `../fonts/NotoSans-Italic.ttf`.
+/// When the `compressed` feature is enabled, the bytes are zlib-compressed
+/// (pre-compressed by `build.rs`).
 #[cfg(feature = "bundled-noto")]
 pub static SANS_ITALIC: BundledFont = BundledFont {
     family: "Noto Sans",
     postscript_name: "NotoSans-Italic",
+    #[cfg(feature = "compressed")]
+    data: include_bytes!(concat!(env!("OUT_DIR"), "/NotoSans-Italic.ttf.z")),
+    #[cfg(not(feature = "compressed"))]
     data: include_bytes!("../fonts/NotoSans-Italic.ttf"),
     weight: 400,
     style: FontStyle::Italic,
@@ -455,10 +482,15 @@ pub static SANS_ITALIC: BundledFont = BundledFont {
 ///
 /// Licensed under the SIL Open Font License 1.1.
 /// Bytes embedded from `../fonts/NotoSansMono-Regular.ttf`.
+/// When the `compressed` feature is enabled, the bytes are zlib-compressed
+/// (pre-compressed by `build.rs`).
 #[cfg(feature = "bundled-noto")]
 pub static MONO_REGULAR: BundledFont = BundledFont {
     family: "Noto Sans Mono",
     postscript_name: "NotoSansMono-Regular",
+    #[cfg(feature = "compressed")]
+    data: include_bytes!(concat!(env!("OUT_DIR"), "/NotoSansMono-Regular.ttf.z")),
+    #[cfg(not(feature = "compressed"))]
     data: include_bytes!("../fonts/NotoSansMono-Regular.ttf"),
     weight: 400,
     style: FontStyle::Normal,

@@ -7,6 +7,25 @@ OxiFont adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.2] - 2026-06-10
+
+### Added
+
+- **`oxifont-bundled`: `compressed` feature — build-time zlib compression via `build.rs`** — `build.rs` now reads every `.ttf` file from `fonts/`, compresses them with `oxiarc-deflate::zlib_compress` (level 6), and writes `<name>.ttf.z` files to `$OUT_DIR`; when the `compressed` feature is enabled, `BundledFont` embeds the zlib bytes via `include_bytes!(concat!(env!("OUT_DIR"), "..."))` and decompresses on first parse, reducing embedded binary size.
+- **`oxifont-bundled`: `BundledFont::decompressed_data()` works correctly with actual compressed data** — removed the forward-compatibility SFNT-magic bypass in `decompress_font`; the function now directly calls `oxiarc_deflate::zlib_decompress`; the magic bypass was designed for a future build script that has now landed.
+- **`oxifont-webfont`: WOFF2 glyf/loca passthrough support** — enhanced glyf/loca table handling with improved passthrough logic for non-transformed tables, and improved reconstruction logic for transformed glyf tables.
+- **`oxifont-bundled`: additional compressed feature tests** — added `compressed_tests` module with `compressed_data_is_not_raw_sfnt` and round-trip validity tests; updated `sans_regular_ttf_magic`, `sans_bold_ttf_magic`, `serif_regular_ttf_magic`, and `all_fonts_have_valid_ttf_magic` to use `decompressed_data()` so they work under both compressed and non-compressed builds.
+
+### Changed
+
+- `oxifont-bundled` `decompressed_data_length_matches_raw_data` test updated to correctly assert that stored bytes are smaller than decompressed bytes under the `compressed` feature, and equal lengths without the feature.
+- `oxiarc-deflate` bumped from `0.3.2` to `0.3.3`.
+- `oxiarc-brotli` bumped from `0.3.2` to `0.3.3`.
+
+[0.1.2]: https://github.com/cool-japan/oxifont/releases/tag/v0.1.2
+
+---
+
 ## [0.1.1] - 2026-06-04
 
 ### Added

@@ -372,9 +372,10 @@ fn parse_transformed_header(cur: &mut Cursor<'_>) -> Result<TransformedGlyfHeade
 
     let version = cur.read_u16_be()?;
     if version != 0x0003 {
-        // Only version 3 (0x0003) is specified. Warn but continue.
-        // Some encoders may produce version 0; accept both.
-        if version != 0x0000 {
+        // Only version 3 (0x0003) is specified.  Some encoders may produce version 0;
+        // accept that too.  Version 0x0002 is our custom passthrough marker and is
+        // handled separately in `reconstruct_glyf_loca` before this function is called.
+        if version != 0x0000 && version != 0x0002 {
             return Err(WebFontError::MalformedGlyfTransform(format!(
                 "unsupported transformed glyf version: 0x{version:04X}"
             )));
@@ -694,8 +695,33 @@ fn write_simple_glyph(
     out.extend_from_slice(&instr_len.to_be_bytes());
     out.extend_from_slice(instructions);
 
-    // flags (write each flag individually — no RLE required for validity)
-    out.extend_from_slice(flags);
+    // Flags: use REPEAT_FLAG (bit 3 = 0x08) to compress runs of identical flag bytes,
+    // matching the RLE encoding that real TrueType fonts use.  A run of N identical
+    // flags is written as [flag | 0x08, N-1] (the flag byte with the REPEAT_FLAG bit
+    // set, followed by a repeat count of N-1 additional repetitions).  Single flags or
+    // flags not part of a run are written verbatim without the REPEAT_FLAG bit.
+    let n = flags.len();
+    let mut fi = 0usize;
+    while fi < n {
+        let cur_flag = flags[fi];
+        // Count how many consecutive identical flags follow (up to 255 repeats = 256 total).
+        let mut run_len = 1usize;
+        while fi + run_len < n && flags[fi + run_len] == cur_flag && run_len < 256 {
+            run_len += 1;
+        }
+        if run_len == 1 {
+            // Single flag — write verbatim (no REPEAT_FLAG).
+            out.push(cur_flag);
+        } else {
+            // Multiple identical flags — write with REPEAT_FLAG.
+            // REPEAT_FLAG (0x08) must not already be set; safe because encode_coordinates
+            // never sets bit 3 in the produced flag bytes.
+            out.push(cur_flag | 0x08);
+            // Repeat count = number of *additional* repetitions (total - 1), capped at 255.
+            out.push((run_len - 1).min(255) as u8);
+        }
+        fi += run_len;
+    }
 
     // x-coordinates: write as i8 or i16 based on flag.
     for (i, &x) in x_coords.iter().enumerate() {
@@ -780,8 +806,238 @@ pub struct ReconstructedGlyfLoca {
     pub index_format: u16,
 }
 
+/// Reconstruct `loca` table from raw `glyf` bytes and a known `index_format`.
+///
+/// Scans the raw glyf table and builds the loca offset array by walking each
+/// glyph's data.  Each loca entry records the byte offset of the corresponding
+/// glyph within `glyf_data`; the final extra entry records the end of the last
+/// glyph.  Glyph boundaries are determined by reading the 10-byte glyph header
+/// (for non-empty glyphs) and the variable-length flag/coordinate data.
+///
+/// Because the raw glyf bytes already include correct 4-byte alignment padding
+/// between glyphs, the loca entries produced here exactly match those of the
+/// original font.
+fn reconstruct_loca_from_raw_glyf(
+    glyf_data: &[u8],
+    num_glyphs: u16,
+    index_format: u16,
+) -> Result<Vec<u8>, WebFontError> {
+    // Walk the raw glyf bytes to find glyph boundaries.
+    // The original TTF glyf table already has 4-byte-aligned glyph entries;
+    // we parse each one to find its exact end offset.
+    let mut offsets: Vec<u32> = Vec::with_capacity(num_glyphs as usize + 1);
+    let mut pos = 0usize;
+
+    for _gid in 0..num_glyphs as usize {
+        offsets.push(pos as u32);
+        if pos >= glyf_data.len() {
+            // Glyph starts at end — empty glyph; loca entry = previous.
+            continue;
+        }
+        if pos + 2 > glyf_data.len() {
+            return Err(WebFontError::TooShort);
+        }
+        let n_contours = i16::from_be_bytes([glyf_data[pos], glyf_data[pos + 1]]);
+        if n_contours == 0 && pos + 10 <= glyf_data.len() {
+            // Check: is the 10-byte glyph header all zeros (true empty glyph)?
+            // Convention: a zero n_contours with no data means empty; skip to next 4-byte boundary.
+            // Most real fonts don't produce n_contours=0 non-empty glyphs, but handle conservatively.
+            pos += 10;
+            while !pos.is_multiple_of(4) && pos < glyf_data.len() {
+                pos += 1;
+            }
+            continue;
+        }
+        if n_contours < 0 {
+            // Composite glyph: walk component records.
+            pos += 10; // skip header
+            loop {
+                if pos + 4 > glyf_data.len() {
+                    return Err(WebFontError::TooShort);
+                }
+                let flags = u16::from_be_bytes([glyf_data[pos], glyf_data[pos + 1]]);
+                pos += 4; // flags + glyphIndex
+                if flags & 0x0001 != 0 {
+                    pos += 4; // 2-byte args
+                } else {
+                    pos += 2; // 1-byte args
+                }
+                if flags & 0x0008 != 0 {
+                    pos += 2; // WE_HAVE_A_SCALE
+                } else if flags & 0x0040 != 0 {
+                    pos += 4; // WE_HAVE_AN_X_AND_Y_SCALE
+                } else if flags & 0x0080 != 0 {
+                    pos += 8; // WE_HAVE_A_TWO_BY_TWO
+                }
+                if flags & 0x0020 == 0 {
+                    // Last component.
+                    if flags & 0x0100 != 0 {
+                        // WE_HAVE_INSTRUCTIONS: instruction length + bytes follow.
+                        if pos + 2 > glyf_data.len() {
+                            return Err(WebFontError::TooShort);
+                        }
+                        let instr_len =
+                            u16::from_be_bytes([glyf_data[pos], glyf_data[pos + 1]]) as usize;
+                        pos += 2 + instr_len;
+                    }
+                    break;
+                }
+            }
+        } else {
+            // Simple glyph.
+            let n_c = n_contours as usize;
+            // header (10) + endPts (n_c*2) + instrLen (2)
+            if pos + 10 + n_c * 2 + 2 > glyf_data.len() {
+                return Err(WebFontError::TooShort);
+            }
+            // endPts are at pos+10; last endPt = pos+10+(n_c-1)*2
+            let last_end_pt_offset = pos + 10 + (n_c - 1) * 2;
+            let last_end_pt = u16::from_be_bytes([
+                glyf_data[last_end_pt_offset],
+                glyf_data[last_end_pt_offset + 1],
+            ]) as usize;
+            let total_points = last_end_pt + 1;
+
+            let instr_len_offset = pos + 10 + n_c * 2;
+            let instr_len =
+                u16::from_be_bytes([glyf_data[instr_len_offset], glyf_data[instr_len_offset + 1]])
+                    as usize;
+            pos = instr_len_offset + 2 + instr_len;
+
+            // Walk flags (with REPEAT_FLAG expansion).
+            let mut pt = 0usize;
+            while pt < total_points {
+                if pos >= glyf_data.len() {
+                    return Err(WebFontError::TooShort);
+                }
+                let flag = glyf_data[pos];
+                pos += 1;
+                let mut count = 1usize;
+                if flag & 0x08 != 0 {
+                    if pos >= glyf_data.len() {
+                        return Err(WebFontError::TooShort);
+                    }
+                    count += glyf_data[pos] as usize;
+                    pos += 1;
+                }
+                pt += count;
+            }
+
+            // Re-parse from past instructions to count coordinate bytes.
+            // Back up pos to instr_len_offset + 2 + instr_len (past instructions):
+            let coords_start = instr_len_offset + 2 + instr_len;
+            pos = coords_start;
+            // Parse flag bytes to get actual flags per point.
+            let mut actual_flags: Vec<u8> = Vec::with_capacity(total_points);
+            let mut fp = pos;
+            while actual_flags.len() < total_points {
+                if fp >= glyf_data.len() {
+                    return Err(WebFontError::TooShort);
+                }
+                let flag = glyf_data[fp];
+                fp += 1;
+                actual_flags.push(flag);
+                if flag & 0x08 != 0 {
+                    if fp >= glyf_data.len() {
+                        return Err(WebFontError::TooShort);
+                    }
+                    let repeat = glyf_data[fp] as usize;
+                    fp += 1;
+                    for _ in 0..repeat {
+                        if actual_flags.len() >= total_points {
+                            break;
+                        }
+                        actual_flags.push(flag);
+                    }
+                }
+            }
+            pos = fp;
+
+            // Count x-coordinate bytes.
+            for &flag in &actual_flags {
+                if flag & 0x02 != 0 {
+                    pos += 1; // X_SHORT_VECTOR
+                } else if flag & 0x10 != 0 {
+                    // SAME_X: 0 bytes
+                } else {
+                    pos += 2; // 2-byte delta
+                }
+            }
+            // Count y-coordinate bytes.
+            for &flag in &actual_flags {
+                if flag & 0x04 != 0 {
+                    pos += 1; // Y_SHORT_VECTOR
+                } else if flag & 0x20 != 0 {
+                    // SAME_Y: 0 bytes
+                } else {
+                    pos += 2; // 2-byte delta
+                }
+            }
+        }
+
+        // Align to 4-byte boundary (TTF glyf requires 4-byte alignment).
+        while !pos.is_multiple_of(4) {
+            pos += 1;
+        }
+    }
+
+    offsets.push(pos as u32);
+    build_loca_table(&offsets, index_format)
+}
+
 /// Reconstruct TrueType `glyf` and `loca` from the WOFF2 transformed block.
 pub fn reconstruct_glyf_loca(transformed: &[u8]) -> Result<ReconstructedGlyfLoca, WebFontError> {
+    // Peek at the version field (first 2 bytes of the 36-byte header) to check
+    // for the custom passthrough marker (0x0002) written by our encoder.
+    if transformed.len() >= GLYF_HEADER_SIZE {
+        let version = u16::from_be_bytes([transformed[0], transformed[1]]);
+        if version == 0x0002 {
+            // Passthrough block: raw glyf bytes are stored in the composite-stream slot.
+            // Header layout:
+            //   [0..2]  version = 0x0002
+            //   [2..4]  option_flags
+            //   [4..6]  num_glyphs
+            //   [6..8]  index_format
+            //   [8..12] nContourStreamSize  = 0
+            //   [12..16] nPointsStreamSize  = 0
+            //   [16..20] flagStreamSize     = 0
+            //   [20..24] glyphStreamSize    = 0
+            //   [24..28] compositeStreamSize = glyf_data.len()
+            //   [28..32] bboxStreamSize     = 0
+            //   [32..36] instructionStreamSize = 0
+            //   [36..]  raw glyf bytes
+            let num_glyphs = u16::from_be_bytes([transformed[4], transformed[5]]);
+            let index_format = u16::from_be_bytes([transformed[6], transformed[7]]);
+            let composite_stream_size = u32::from_be_bytes([
+                transformed[24],
+                transformed[25],
+                transformed[26],
+                transformed[27],
+            ]) as usize;
+
+            let payload_start = GLYF_HEADER_SIZE;
+            let payload_end = payload_start
+                .checked_add(composite_stream_size)
+                .ok_or(WebFontError::Overflow("passthrough glyf payload end"))?;
+
+            let glyf = transformed
+                .get(payload_start..payload_end)
+                .ok_or(WebFontError::OutOfBounds {
+                    context: "passthrough glyf payload",
+                })?
+                .to_vec();
+
+            // Reconstruct loca from the raw glyf bytes.
+            let loca = reconstruct_loca_from_raw_glyf(&glyf, num_glyphs, index_format)?;
+
+            return Ok(ReconstructedGlyfLoca {
+                glyf,
+                loca,
+                index_format,
+            });
+        }
+    }
+
     let mut cur = Cursor::new(transformed);
     let hdr = parse_transformed_header(&mut cur)?;
 
@@ -857,8 +1113,11 @@ pub fn reconstruct_glyf_loca(transformed: &[u8]) -> Result<ReconstructedGlyfLoca
         if n_contours < 0 {
             // Composite glyph — read raw composite data from compositeStream.
             // The composite data is in standard TrueType composite format.
+            // Per WOFF2 spec §5.1: component records are in compositeStream;
+            // when WE_HAVE_INSTRUCTIONS is set on the last component, instruction
+            // length and bytes are in instructionStream.
             let composite_start_pos = composite_cur.pos;
-            read_composite_glyph(&mut composite_cur, &mut instr_cur)?;
+            let instruction_block = read_composite_glyph(&mut composite_cur, &mut instr_cur)?;
 
             let composite_bytes = &composite_stream_data[composite_start_pos..composite_cur.pos];
 
@@ -869,6 +1128,10 @@ pub fn reconstruct_glyf_loca(transformed: &[u8]) -> Result<ReconstructedGlyfLoca
             glyf_data.extend_from_slice(&x_max.to_be_bytes());
             glyf_data.extend_from_slice(&y_max.to_be_bytes());
             glyf_data.extend_from_slice(composite_bytes);
+            // Append instruction block (instLength u16 + instBytes) if WE_HAVE_INSTRUCTIONS.
+            if let Some(instr_block) = instruction_block {
+                glyf_data.extend_from_slice(&instr_block);
+            }
 
             // Pad to 4-byte boundary.
             while !glyf_data.len().is_multiple_of(4) {
@@ -1017,13 +1280,19 @@ pub fn reconstruct_glyf_loca(transformed: &[u8]) -> Result<ReconstructedGlyfLoca
     })
 }
 
-/// Read a composite glyph from the compositeStream and instructions from instructionStream.
+/// Read a composite glyph from the compositeStream and optionally instructions from
+/// instructionStream.
 ///
-/// Returns after reading all component records.
+/// Returns the instruction bytes to embed in the reconstructed TrueType glyph, if any.
+/// Per WOFF2 spec §5.1:
+/// - Component records are in compositeStream (without instruction data)
+/// - When the last component has `WE_HAVE_INSTRUCTIONS` (0x0100), the instruction
+///   length (uint16) and instruction bytes are in instructionStream
+/// - The reconstructed glyph must contain: component records + instLength(u16) + instBytes
 fn read_composite_glyph(
     composite_cur: &mut Cursor<'_>,
     instr_cur: &mut Cursor<'_>,
-) -> Result<(), WebFontError> {
+) -> Result<Option<Vec<u8>>, WebFontError> {
     // TrueType composite format: each component starts with flags (uint16) + glyphIndex (uint16).
     // We copy components verbatim from compositeStream back to glyf.
     // The WE_HAVE_INSTRUCTIONS flag (0x0100) on the *last* component means instructions follow
@@ -1063,19 +1332,23 @@ fn read_composite_glyph(
         if flags & 0x0020 == 0 {
             // Last component. Check for instructions.
             if flags & 0x0100 != 0 {
-                // WE_HAVE_INSTRUCTIONS: read instructionLength (uint16) + instructions.
+                // WE_HAVE_INSTRUCTIONS: instruction length (uint16) + instruction bytes
+                // are stored in instructionStream (per WOFF2 spec §5.1).
                 let instr_len = instr_cur.read_u16_be()? as usize;
-                let _ = instr_cur.read_bytes(instr_len)?;
-                // We need to embed the instruction length and bytes in the composite data.
-                // But we've been reading from composite_cur and instr_cur separately.
-                // The reconstruction writes composite_stream bytes verbatim + appends instr.
-                // This is handled in the caller (reconstruct_glyf_loca).
+                let instr_bytes = instr_cur.read_bytes(instr_len)?.to_vec();
+
+                // Reconstruct the instruction block to embed back in the TrueType glyph:
+                // instructionLength (uint16 big-endian) followed by instruction bytes.
+                let mut embedded = Vec::with_capacity(2 + instr_len);
+                embedded.extend_from_slice(&(instr_len as u16).to_be_bytes());
+                embedded.extend_from_slice(&instr_bytes);
+                return Ok(Some(embedded));
             }
             break;
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
 /// Read a `255UInt16` encoded value from the cursor.

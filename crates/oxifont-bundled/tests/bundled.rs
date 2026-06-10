@@ -96,7 +96,11 @@ mod with_noto {
 
     #[test]
     fn sans_regular_ttf_magic() {
-        let d = SANS_REGULAR.data();
+        // Use decompressed_data() so the test works with both `compressed` and
+        // non-compressed builds (under `compressed`, `data()` holds zlib bytes).
+        let d = SANS_REGULAR
+            .decompressed_data()
+            .expect("NotoSans-Regular decompressed_data must succeed");
         assert!(d.len() >= 4, "NotoSans-Regular too short");
         let magic = &d[..4];
         let valid = magic == [0x00, 0x01, 0x00, 0x00]
@@ -137,7 +141,11 @@ mod with_noto {
 
     #[test]
     fn sans_bold_ttf_magic() {
-        let d = SANS_BOLD.data();
+        // Use decompressed_data() so the test works with both `compressed` and
+        // non-compressed builds (under `compressed`, `data()` holds zlib bytes).
+        let d = SANS_BOLD
+            .decompressed_data()
+            .expect("NotoSans-Bold decompressed_data must succeed");
         assert!(d.len() >= 4, "NotoSans-Bold too short");
         let magic = &d[..4];
         let valid = magic == [0x00, 0x01, 0x00, 0x00]
@@ -191,7 +199,11 @@ mod with_noto {
 
     #[test]
     fn serif_regular_ttf_magic() {
-        let d = SERIF_REGULAR.data();
+        // Use decompressed_data() so the test works with both `compressed` and
+        // non-compressed builds (under `compressed`, `data()` holds zlib bytes).
+        let d = SERIF_REGULAR
+            .decompressed_data()
+            .expect("NotoSerif-Regular decompressed_data must succeed");
         assert!(d.len() >= 4, "NotoSerif-Regular too short");
         let magic = &d[..4];
         let valid = magic == [0x00, 0x01, 0x00, 0x00]
@@ -225,7 +237,11 @@ mod with_noto {
     #[test]
     fn all_fonts_have_valid_ttf_magic() {
         for font in all() {
-            let d = font.data();
+            // Under the `compressed` feature, `data()` holds zlib bytes —
+            // use `decompressed_data()` to get the raw TTF for magic checks.
+            let d = font
+                .decompressed_data()
+                .expect("decompressed_data must succeed");
             assert!(d.len() >= 4, "Font {} data too short", font.family);
             let magic = &d[..4];
             let valid = magic == [0x00, 0x01, 0x00, 0x00]
@@ -385,15 +401,135 @@ mod decompressed_data_tests {
 
     #[test]
     fn decompressed_data_length_matches_raw_data() {
-        // Until compressed storage is implemented, decompressed == raw.
-        let raw = SANS_REGULAR.data();
         let decompressed = SANS_REGULAR
             .decompressed_data()
             .expect("decompress must succeed");
+        // The decompressed output must be a non-empty valid font.
+        assert!(
+            !decompressed.is_empty(),
+            "decompressed data must not be empty"
+        );
+        // Must start with a valid TrueType magic.
         assert_eq!(
-            raw.len(),
-            decompressed.len(),
-            "decompressed length must equal raw length before build.rs compression"
+            &decompressed[..4],
+            &[0x00, 0x01, 0x00, 0x00],
+            "decompressed NotoSans-Regular must start with TrueType magic"
+        );
+
+        // Under the compressed feature the stored bytes are zlib-wrapped, so
+        // raw.len() < decompressed.len().  Without compression they are equal.
+        #[cfg(not(feature = "compressed"))]
+        {
+            let raw = SANS_REGULAR.data();
+            assert_eq!(
+                raw.len(),
+                decompressed.len(),
+                "without compressed feature: decompressed length must equal raw length"
+            );
+        }
+        #[cfg(feature = "compressed")]
+        {
+            let raw = SANS_REGULAR.data();
+            assert!(
+                raw.len() < decompressed.len(),
+                "with compressed feature: stored bytes must be smaller than decompressed (raw={}, decompressed={})",
+                raw.len(),
+                decompressed.len()
+            );
+        }
+    }
+}
+
+// ── Compressed feature: round-trip and validity tests ────────────────────────
+
+/// Tests that are only meaningful when both `bundled-noto` and `compressed` are
+/// active — the build script has run and the font data is zlib-compressed.
+#[cfg(all(feature = "bundled-noto", feature = "compressed"))]
+mod compressed_tests {
+    use oxifont_bundled::{SANS_BOLD, SANS_REGULAR, SERIF_REGULAR};
+
+    /// Verify that the raw `data()` slice is NOT a raw TTF (it is zlib).
+    ///
+    /// Under the compressed feature `data()` returns the zlib-compressed bytes
+    /// produced by `build.rs`.  A raw TrueType file starts with the magic
+    /// `0x00 0x01 0x00 0x00`; zlib starts with `0x78 xx`.
+    #[test]
+    fn compressed_data_is_not_raw_sfnt() {
+        for font in oxifont_bundled::all() {
+            let d = font.data();
+            assert!(
+                d.len() >= 2,
+                "compressed data too short for {}",
+                font.family
+            );
+            // zlib header: CMF byte 0x78, FLG byte (0x01, 0x9C, 0xDA, …).
+            assert_eq!(
+                d[0], 0x78,
+                "Font {} stored data must start with zlib CMF byte 0x78, got 0x{:02x}",
+                font.family, d[0]
+            );
+        }
+    }
+
+    /// Verify that `decompressed_data()` yields valid TrueType/OTF magic bytes.
+    #[test]
+    fn decompressed_data_has_valid_font_magic() {
+        let fonts = [
+            SANS_REGULAR
+                .decompressed_data()
+                .expect("SANS_REGULAR decompress"),
+            SANS_BOLD.decompressed_data().expect("SANS_BOLD decompress"),
+            SERIF_REGULAR
+                .decompressed_data()
+                .expect("SERIF_REGULAR decompress"),
+        ];
+        for bytes in &fonts {
+            assert!(bytes.len() >= 4, "decompressed font too short");
+            let magic = &bytes[..4];
+            let valid = magic == [0x00, 0x01, 0x00, 0x00]
+                || magic == b"OTTO"
+                || magic == b"ttcf"
+                || magic == b"true";
+            assert!(valid, "decompressed font has unexpected magic: {:?}", magic);
+        }
+    }
+
+    /// Verify zlib compress→decompress round-trip using `oxiarc_deflate` directly.
+    ///
+    /// This is a unit-level check that the compression algorithm used by
+    /// `build.rs` (`zlib_compress`) round-trips correctly with the runtime
+    /// decompressor (`zlib_decompress`).
+    #[test]
+    fn zlib_round_trip() {
+        let original = SANS_REGULAR
+            .decompressed_data()
+            .expect("SANS_REGULAR decompress");
+        // Re-compress at level 6 (same as build.rs).
+        let recompressed =
+            oxiarc_deflate::zlib_compress(&original, 6).expect("zlib_compress must succeed");
+        let roundtripped =
+            oxiarc_deflate::zlib_decompress(&recompressed).expect("zlib_decompress must succeed");
+        assert_eq!(
+            original, roundtripped,
+            "round-trip compress→decompress must reproduce the original bytes"
+        );
+    }
+
+    /// Verify that compression actually reduces the font size.
+    ///
+    /// Font files (TTF/OTF) contain many structured binary tables that compress
+    /// well; a good compressor should always produce output smaller than input.
+    #[test]
+    fn compressed_size_is_smaller_than_raw() {
+        let raw = SANS_REGULAR
+            .decompressed_data()
+            .expect("SANS_REGULAR decompress");
+        let stored = SANS_REGULAR.data();
+        assert!(
+            stored.len() < raw.len(),
+            "compressed size ({}) must be less than raw size ({})",
+            stored.len(),
+            raw.len()
         );
     }
 }

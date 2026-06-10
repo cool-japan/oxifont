@@ -30,8 +30,12 @@ oxifont-parser = { workspace = true }
 workspace = true
 optional = true
 
+[build-dependencies]
+oxiarc-deflate.workspace = true
+
 [dev-dependencies]
 criterion.workspace = true
+oxiarc-deflate.workspace = true
 
 [[bench]]
 name = "bundled_parse"

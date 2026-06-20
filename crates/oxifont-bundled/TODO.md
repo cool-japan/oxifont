@@ -1,7 +1,7 @@
 # oxifont-bundled TODO
 
 ## Status
-Round 14 Slice 2 complete (2026-05-27). `BundledFont` struct extended with `parsed: OnceLock<Arc<ParsedFace>>` field and new `parsed_face()` method (OnceLock cache). `SANS_ITALIC` and `MONO_REGULAR` static constants added (variable-font TTFs from Google Fonts repo), both behind `bundled-noto` feature. `ALL_FONT_REFS` extended to 5 entries. `tests/bundled_italic_mono.rs` added (OnceLock Arc::ptr_eq, italic style, mono family, catalog count=5). `tests/wasm32_compile.rs` added. `cargo check --target wasm32-unknown-unknown` passes. 61 tests pass with `--all-features`, 18 pass with default features. Zero clippy warnings in all configurations.
+v0.1.3 — 2026-06-19. `BundledFont` struct with `parsed: OnceLock<Arc<ParsedFace>>` field and `parsed_face()` method (OnceLock cache). `SANS_ITALIC` and `MONO_REGULAR` static constants (variable-font TTFs). `ALL_FONT_REFS` extended to 5 entries. `cargo check --target wasm32-unknown-unknown` passes. 56 tests pass with `--all-features`. Zero clippy warnings in all configurations.
 
 ## Core Implementation
 - [x] Create `Cargo.toml` with `name = "oxifont-bundled"`, workspace version/edition/authors/license/repository, dependency on `oxifont-core`

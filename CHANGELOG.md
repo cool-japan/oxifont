@@ -7,6 +7,16 @@ OxiFont adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.1.3] - 2026-06-19
+
+### Changed
+
+- All nine workspace member crates bumped from `0.1.2` to `0.1.3` (`oxifont-core`, `oxifont-parser`, `oxifont-discovery`, `oxifont-adapter-pure`, `oxifont-db`, `oxifont-webfont`, `oxifont-subset`, `oxifont-adapter-native`, `oxifont-bundled`).
+
+[0.1.3]: https://github.com/cool-japan/oxifont/releases/tag/v0.1.3
+
+---
+
 ## [0.1.2] - 2026-06-10
 
 ### Added

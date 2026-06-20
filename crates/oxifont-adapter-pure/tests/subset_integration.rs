@@ -22,8 +22,14 @@ mod subset_tests {
 
     /// Write the fixture TTF to a temp directory and return a `FontDatabase`
     /// backed by it, together with the temp directory path (caller must clean up).
-    fn db_with_fixture() -> (FontDatabase, std::path::PathBuf) {
-        let tmp = std::env::temp_dir().join(format!("oxifont_subset_integ_{}", std::process::id()));
+    /// A `suffix` parameter disambiguates concurrent test invocations that share
+    /// the same PID — each test must pass a unique string (e.g. the test name).
+    fn db_with_fixture(suffix: &str) -> (FontDatabase, std::path::PathBuf) {
+        let tmp = std::env::temp_dir().join(format!(
+            "oxifont_subset_integ_{}_{}",
+            std::process::id(),
+            suffix
+        ));
         std::fs::create_dir_all(&tmp).expect("create temp dir");
         std::fs::write(tmp.join("test.ttf"), FIXTURE_BYTES).expect("write fixture");
         let db = FontDatabase::scan(&[&tmp]).expect("scan must not error");
@@ -36,7 +42,7 @@ mod subset_tests {
 
     #[test]
     fn subset_face_returns_valid_sfnt() {
-        let (db, tmp) = db_with_fixture();
+        let (db, tmp) = db_with_fixture("returns_valid_sfnt");
         let info = match db.faces().first() {
             Some(f) => f.clone(),
             None => {
@@ -73,7 +79,7 @@ mod subset_tests {
 
     #[test]
     fn subset_face_is_not_larger_than_original() {
-        let (db, tmp) = db_with_fixture();
+        let (db, tmp) = db_with_fixture("not_larger_than_original");
         let info = match db.faces().first() {
             Some(f) => f.clone(),
             None => {
@@ -102,7 +108,7 @@ mod subset_tests {
 
     #[test]
     fn subset_face_for_web_returns_valid_sfnt() {
-        let (db, tmp) = db_with_fixture();
+        let (db, tmp) = db_with_fixture("for_web_valid_sfnt");
         let info = match db.faces().first() {
             Some(f) => f.clone(),
             None => {
@@ -137,7 +143,7 @@ mod subset_tests {
 
     #[test]
     fn subset_face_for_web_not_larger_than_default_subset() {
-        let (db, tmp) = db_with_fixture();
+        let (db, tmp) = db_with_fixture("for_web_not_larger");
         let info = match db.faces().first() {
             Some(f) => f.clone(),
             None => {
@@ -173,7 +179,7 @@ mod subset_tests {
 
     #[test]
     fn font_bytes_bridge_to_subset_crate() {
-        let (db, tmp) = db_with_fixture();
+        let (db, tmp) = db_with_fixture("font_bytes_bridge");
         let info = match db.faces().first() {
             Some(f) => f.clone(),
             None => {

@@ -48,6 +48,7 @@ use oxifont_core::{
 /// # Usage
 /// ```no_run
 /// use oxifont_parser::ParsedFace;
+/// use oxifont_core::traits::FontFace as _;
 ///
 /// let bytes = std::fs::read("/path/to/font.ttf").expect("font file");
 /// let face = ParsedFace::parse(bytes, 0).expect("parse");

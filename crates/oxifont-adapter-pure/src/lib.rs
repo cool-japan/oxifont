@@ -25,10 +25,10 @@
 //! `&oxifont::FontDatabase` (which is a type alias for
 //! `oxifont_adapter_pure::FontDatabase` when using the `pure` Cargo feature).
 //!
-//! ```no_run
+//! ```ignore
 //! use oxifont_adapter_pure::FontDatabase;
 //! use oxifont::FontDatabase as OxiFont;  // requires oxifont `pure` feature
-//! # // This block is only illustrative; oxitext is in a separate crate
+//! // This block is only illustrative; oxitext is in a separate crate
 //! ```
 //!
 //! # Subsetting integration

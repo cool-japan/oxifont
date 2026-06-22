@@ -7,6 +7,31 @@ OxiFont adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.2.0] - 2026-06-22
+
+### Added
+
+- **`oxifont-core`: `platform_dirs` module** — pure Rust replacement for all 7 `dirs::*` call sites; provides `cache_dir()`, `config_dir()`, `data_dir()`, and `home_dir()` using only `std::env` (macOS `$HOME/Library/…`, Linux XDG, Windows `%LOCALAPPDATA%`/`%USERPROFILE%`), eliminating the `dirs` crate from the dependency closure entirely.
+
+### Removed
+
+- **`dirs` crate** removed from `oxifont-db` and `oxifont-discovery` (was version 6.x); all consumers now use `oxifont-core::platform_dirs` instead.
+- **`native` feature removed from the `oxifont` facade crate** — applications that need CoreText (macOS) or DirectWrite (Windows) native font enumeration must now depend directly on `oxifont-adapter-native` and opt into its `native` feature; the facade re-export layer no longer aggregates the native platform adapter, keeping the facade dependency closure pure under all feature combinations.
+
+### Changed
+
+- `oxifont-adapter-pure` cache-directory resolution ported from `dirs::cache_dir()` to `oxifont_core::platform_dirs::cache_dir()`.
+- `oxifont-discovery` fontconfig XML path resolution ported from `dirs::home_dir()` / `dirs::config_dir()` to `oxifont_core::platform_dirs`.
+- `oxitext` and other downstream ecosystem consumers updated to depend on `oxifont-adapter-native` directly rather than relying on the facade `native` feature.
+
+### Security
+
+- **Pure Rust Policy v2 L1 compliance**: `yeslogic-fontconfig-sys` (a C FFI crate) is no longer reachable from the `oxifont` facade crate under any feature combination; it remains available only through `oxifont-adapter-native` where FFI is intentional and feature-gated.
+
+[0.2.0]: https://github.com/cool-japan/oxifont/releases/tag/v0.2.0
+
+---
+
 ## [0.1.3] - 2026-06-19
 
 ### Changed

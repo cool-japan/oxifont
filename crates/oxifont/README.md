@@ -5,26 +5,23 @@
 
 `oxifont` is the top-level facade for the OxiFont ecosystem: Pure-Rust font discovery, parsing, subsetting, and web-font encoding. A single dependency re-exports the most commonly needed items from the `oxifont-*` subcrates, with optional functionality gated behind feature flags. Every subcrate can also be used independently.
 
-Out of the box (`default = ["pure", "discovery"]`) you get filesystem font discovery and a CSS-aware [`FontDatabase`] — no native libraries, no FFI, no C/C++ dependencies. Opt-in features add a CSS Level 4 query engine, WOFF1/WOFF2 codecs, glyph subsetting, OS-native enumeration (CoreText/DirectWrite), and compile-time bundled Noto fonts.
+Out of the box (`default = ["pure", "discovery"]`) you get filesystem font discovery and a CSS-aware [`FontDatabase`] — no native libraries, no FFI, no C/C++ dependencies. Opt-in features add a CSS Level 4 query engine, WOFF1/WOFF2 codecs, glyph subsetting, and compile-time bundled Noto fonts.
 
 ## Installation
 
 ```toml
 [dependencies]
 # Default: pure-Rust filesystem discovery + FontDatabase
-oxifont = "0.1.0"
+oxifont = "0.2.0"
 
 # CSS Level 4 query engine
-oxifont = { version = "0.1.0", features = ["db"] }
+oxifont = { version = "0.2.0", features = ["db"] }
 
 # WOFF2 decode/encode + glyph subsetting pipeline
-oxifont = { version = "0.1.0", features = ["woff2", "subset"] }
-
-# OS-native enumeration (CoreText on macOS, DirectWrite on Windows — NOT pure Rust)
-oxifont = { version = "0.1.0", features = ["native"] }
+oxifont = { version = "0.2.0", features = ["woff2", "subset"] }
 
 # Bundled Noto fonts for environments without system fonts (WASM, CI, containers)
-oxifont = { version = "0.1.0", features = ["bundled-noto"] }
+oxifont = { version = "0.2.0", features = ["bundled-noto"] }
 ```
 
 ## Quick Start
@@ -77,7 +74,6 @@ re-exports the most commonly needed items under one dependency.
 | [`oxifont-parser`](../oxifont-parser) | TTF/OTF/TTC parsing | `parser` module + top-level `ParsedFace`, `face_count` |
 | [`oxifont-discovery`](../oxifont-discovery) | Filesystem font-directory scanning | `discovery` module *(feature `discovery`)* |
 | [`oxifont-adapter-pure`](../oxifont-adapter-pure) | Pure-Rust catalog from filesystem scan | `FontDatabase` *(feature `pure`)* |
-| [`oxifont-adapter-native`](../oxifont-adapter-native) | CoreText/DirectWrite enumeration (not Pure Rust) | `native` module *(feature `native`)* |
 | [`oxifont-db`](../oxifont-db) | In-memory indexed DB with CSS matching | `db` module *(feature `db`)* |
 | [`oxifont-subset`](../oxifont-subset) | TrueType/CFF glyph subsetting | `subset` module *(feature `subset`)* |
 | [`oxifont-webfont`](../oxifont-webfont) | WOFF1/WOFF2 encode & decode | `webfont` module *(features `woff1`/`woff2`)* |
@@ -89,7 +85,6 @@ re-exports the most commonly needed items under one dependency.
 |---------|---------|---------|
 | `pure` | yes | `FontDatabase` from filesystem scan (via `oxifont-adapter-pure`) |
 | `discovery` | yes | `discovery` module: `system_font_dirs`, `scan_dirs`, `scan_file`, `user_font_dirs`, `ScanOptions`, `ScanResult` |
-| `native` | no | `native` module: `native::NativeCatalog` (CoreText on macOS, DirectWrite on Windows); enables `system_with_native()` |
 | `db` | no | `db` module: `db::FontDatabase` with the CSS Level 4 `db::Query` engine; enables `system_fonts()` |
 | `woff1` | no | `webfont` module: WOFF1 encode/decode; enables WOFF1 in `decode_and_parse` |
 | `woff2` | no | `webfont` module: WOFF2 encode/decode; enables WOFF2 in `decode_and_parse` |
@@ -102,10 +97,6 @@ re-exports the most commonly needed items under one dependency.
 | `bundled-noto-cjk-kr` | no | Embedded Noto Sans CJK KR (Korean) |
 | `bundled-noto-cjk-sc` | no | Embedded Noto Sans CJK SC (Simplified Chinese) |
 | `bundled-noto-cjk-tc` | no | Embedded Noto Sans CJK TC (Traditional Chinese) |
-
-> The `native` feature is the only non-Pure-Rust path: on macOS/Windows it links
-> the system font frameworks via FFI. All other features (and the default build)
-> are 100% Pure Rust.
 
 ## Re-exported Types at Crate Root
 
@@ -126,8 +117,7 @@ From [`oxifont-adapter-pure`](../oxifont-adapter-pure) *(feature `pure`)*: `Font
 | `load_font_bytes(data, face_index) -> Result<ParsedFace, FontError>` | — | Parse a specific face from in-memory bytes |
 | `detect_format(data) -> FontFormat` | — | Identify the container from the first 4 magic bytes |
 | `decode_and_parse(data) -> Result<ParsedFace, FontError>` | — | Detect, decode (WOFF1/2 if enabled), and parse into a `ParsedFace` |
-| `system_with_native() -> Result<native::NativeCatalog, FontError>` | `native` | Build a catalog from CoreText / DirectWrite |
-| `system_fonts() -> Result<db::FontDatabase, FontError>` | `db` + (`native`/`pure`) | Populate a CSS `db::FontDatabase` from the best available system source |
+| `system_fonts() -> Result<db::FontDatabase, FontError>` | `db` + `pure` | Populate a CSS `db::FontDatabase` from a pure filesystem scan |
 | `system_fonts_with_bundled_fallback() -> Result<db::FontDatabase, FontError>` | `db` + `bundled-noto` | `system_fonts()` that injects bundled Noto fonts when discovery finds none |
 | `system_with_bundled() -> bundled::provider::BundledFontProvider` | `bundled-noto` | A provider pre-loaded with the embedded Noto fonts |
 | `bundled_fonts() -> bundled::BundledCatalog` | `bundled-noto` | The built-in bundled font catalog |
@@ -190,22 +180,6 @@ Re-exports `DbError`, `FaceInfo`, `FontDatabase`, `Query`, `Source`, and
 Re-exports everything from [`oxifont-webfont`](../oxifont-webfont): `decode_woff2`,
 `encode_woff2`, `decode_woff1`, `encode_woff1`, `decode_auto`, `WebFontError`, and more.
 
-### `native` *(feature `native`)*
-
-```rust,no_run
-# #[cfg(feature = "native")]
-# fn main() -> Result<(), oxifont::FontError> {
-use oxifont::FontCatalog as _;
-let catalog = oxifont::system_with_native()?;
-println!("{} faces via the OS", catalog.faces().len());
-# Ok(())
-# }
-# #[cfg(not(feature = "native"))]
-# fn main() {}
-```
-
-Re-exports `native::NativeCatalog` from [`oxifont-adapter-native`](../oxifont-adapter-native).
-
 ### `subset` *(feature `subset`)*
 
 Re-exports everything from [`oxifont-subset`](../oxifont-subset), including
@@ -223,8 +197,8 @@ Re-exports everything from [`oxifont-bundled`](../oxifont-bundled): `BundledCata
   `load_font_bytes`, or `decode_and_parse`.
 - [`FontCatalog`] is the trait for a searchable font collection. It is implemented
   by the crate-root [`FontDatabase`] (feature `pure`, filesystem scan), by
-  `db::FontDatabase` (feature `db`, CSS-indexed), by `native::NativeCatalog`
-  (feature `native`), and by `bundled::BundledCatalog` (feature `bundled-noto`).
+  `db::FontDatabase` (feature `db`, CSS-indexed), and by `bundled::BundledCatalog`
+  (feature `bundled-noto`).
 - [`FaceInfo`] is a lightweight descriptor (on-disk path, family, weight, style) —
   it does **not** hold font bytes. Use `load_font` or a catalog's `load_face` to
   obtain the full `ParsedFace`.

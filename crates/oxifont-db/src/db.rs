@@ -318,7 +318,7 @@ impl FontDatabase {
     /// Cache files live in `$XDG_CACHE_HOME/oxifont/` (or `~/.cache/oxifont/`).
     #[cfg(feature = "cache")]
     pub fn system_cached() -> Result<Self, DbError> {
-        let cache_dir = dirs::cache_dir()
+        let cache_dir = oxifont_core::platform_dirs::cache_dir()
             .ok_or_else(|| DbError::Cache("cannot determine cache directory".to_string()))?
             .join("oxifont");
 

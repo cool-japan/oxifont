@@ -16,7 +16,6 @@ oxifont-parser    = { workspace = true }
 oxifont-discovery = { workspace = true }
 serde             = { workspace = true, optional = true }
 serde_json        = { workspace = true, optional = true }
-dirs              = { workspace = true, optional = true }
 oxifont-db        = { workspace = true, optional = true }
 oxifont-subset    = { workspace = true, optional = true }
 
@@ -27,7 +26,7 @@ oxifont-subset = { path = "../oxifont-subset" }
 
 [features]
 default = []
-cache   = ["dep:serde", "dep:serde_json", "dep:dirs", "oxifont-core/serde"]
+cache   = ["dep:serde", "dep:serde_json", "oxifont-core/serde"]
 db      = ["dep:oxifont-db"]
 subset  = ["dep:oxifont-subset"]
 

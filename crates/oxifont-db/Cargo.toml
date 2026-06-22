@@ -16,7 +16,6 @@ ttf-parser     = { workspace = true }
 smallvec       = { workspace = true }
 walkdir        = { workspace = true }
 serde          = { workspace = true }
-dirs           = { workspace = true }
 
 [dependencies.serde_json]
 workspace = true

@@ -1072,7 +1072,7 @@ impl FontDatabase {
 //   { "path": "/path/to/Font.ttf", "mtime": 1716000000, "faces": [...FaceInfo...] }
 //
 // The cache is stored at `<cache_dir>/oxifont_face_cache.json` where
-// `<cache_dir>` is `dirs::cache_dir()` (e.g. `~/.cache` on Linux,
+// `<cache_dir>` is `oxifont_core::platform_dirs::cache_dir()` (e.g. `~/.cache` on Linux,
 // `~/Library/Caches` on macOS).
 
 #[cfg(feature = "cache")]
@@ -1121,7 +1121,7 @@ pub(crate) mod cache {
                 return Some(dir.join("oxifont_face_cache.json"));
             }
         }
-        let dir = dirs::cache_dir()?.join("oxifont");
+        let dir = oxifont_core::platform_dirs::cache_dir()?.join("oxifont");
         std::fs::create_dir_all(&dir).ok()?;
         Some(dir.join("oxifont_face_cache.json"))
     }

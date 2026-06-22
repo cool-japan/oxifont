@@ -19,6 +19,8 @@ extern crate alloc;
 pub mod axis;
 pub mod error;
 pub mod info;
+#[cfg(feature = "std")]
+pub mod platform_dirs;
 pub mod sfnt;
 pub mod traits;
 pub mod types;

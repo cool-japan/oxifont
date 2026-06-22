@@ -12,9 +12,9 @@ metrics, CMap, OS/2 and `name` table data, performing CSS Level 4 family/weight/
 Unicode codepoint set, and encoding the result as WOFF1 or WOFF2. Rasterization, hinting execution, shaping, and layout are
 **out of scope** by design — they belong in `oxitext`.
 
-## Status: 0.1.3 — 2026-06-19
+## Status: 0.2.0 — 2026-06-22
 
-Full implementation across all M0–M7 milestones. 10 crates, ~31 000 Rust SLOC, 953 tests passing (excluding slow native CoreText/DirectWrite tests).
+Full implementation across all M0–M7 milestones. 10 crates, ~31 000 Rust SLOC, 955 tests passing (excluding slow native CoreText/DirectWrite tests).
 
 ## Feature Flags
 
@@ -22,7 +22,6 @@ Full implementation across all M0–M7 milestones. 10 crates, ~31 000 Rust SLOC,
 |---|:---:|---|
 | `pure` | yes | `FontDatabase` from pure Rust filesystem scan |
 | `discovery` | yes | `scan_dirs`, `system_font_dirs`, `user_font_dirs` |
-| `native` | no | CoreText (macOS) or DirectWrite (Windows) native enumeration |
 | `db` | no | `FontDatabase` with CSS Level 4 `Query` engine |
 | `woff1` | no | WOFF1 decode and encode |
 | `woff2` | no | WOFF2 decode and encode |
@@ -37,7 +36,7 @@ Full implementation across all M0–M7 milestones. 10 crates, ~31 000 Rust SLOC,
 
 ```toml
 [dependencies]
-oxifont = "0.1"
+oxifont = "0.2"
 ```
 
 ```rust,no_run
@@ -53,7 +52,7 @@ if let Some(face) = db.find(&FontQuery::new().family("Arial")) {
 
 ```toml
 [dependencies]
-oxifont = { version = "0.1", features = ["db"] }
+oxifont = { version = "0.2", features = ["db"] }
 ```
 
 ```rust,no_run
@@ -81,7 +80,7 @@ println!("glyph count: {}", face.glyph_count());
 
 ```toml
 [dependencies]
-oxifont = { version = "0.1", features = ["subset", "woff2"] }
+oxifont = { version = "0.2", features = ["subset", "woff2"] }
 ```
 
 ```rust,no_run
@@ -118,16 +117,18 @@ oxifont (facade)
 ├── oxifont-parser         (ttf-parser binding)
 ├── oxifont-discovery      (fs scan)
 ├── oxifont-adapter-pure   (FontDatabase)
-├── oxifont-adapter-native (CoreText / DirectWrite)  [native feature]
 ├── oxifont-db             (CSS query engine)         [db feature]
 ├── oxifont-subset         (subsetter)                [subset feature]
 ├── oxifont-webfont        (WOFF1/WOFF2)              [woff1/woff2 features]
 └── oxifont-bundled        (embedded Noto fonts)      [bundled-* features]
+
+oxifont-adapter-native (CoreText / DirectWrite)       [depend on directly; native feature]
 ```
 
 All default features use **zero FFI**. Native platform APIs (CoreText, DirectWrite)
-are strictly opt-in via the `native` feature. `fontconfig` and `freetype` are
-permanently off-limits under any feature or adapter.
+are exposed through `oxifont-adapter-native`, which is no longer re-exported by
+the facade crate; depend on it directly and enable its `native` feature. `fontconfig`
+and `freetype` are permanently off-limits under any feature or adapter.
 
 ## Replaces
 

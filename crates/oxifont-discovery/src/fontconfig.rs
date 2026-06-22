@@ -56,7 +56,7 @@ fn user_fontconfig_path() -> Option<PathBuf> {
         p.push("fontconfig/fonts.conf");
         return Some(p);
     }
-    let home = dirs::home_dir()?;
+    let home = oxifont_core::platform_dirs::home_dir()?;
     Some(home.join(".config/fontconfig/fonts.conf"))
 }
 
@@ -66,7 +66,7 @@ fn user_fontconfig_path() -> Option<PathBuf> {
 /// cannot be determined, preserving the caller's ability to skip gracefully.
 fn expand_home(raw: &str) -> Option<PathBuf> {
     if let Some(rest) = raw.strip_prefix('~') {
-        let home = dirs::home_dir()?;
+        let home = oxifont_core::platform_dirs::home_dir()?;
         let rest = rest.trim_start_matches('/');
         return Some(if rest.is_empty() {
             home
@@ -75,7 +75,7 @@ fn expand_home(raw: &str) -> Option<PathBuf> {
         });
     }
     if let Some(rest) = raw.strip_prefix("$HOME") {
-        let home = dirs::home_dir()?;
+        let home = oxifont_core::platform_dirs::home_dir()?;
         let rest = rest.trim_start_matches('/');
         return Some(if rest.is_empty() {
             home
@@ -97,7 +97,7 @@ fn expand_dir(raw: &str, prefix: Option<&str>) -> Option<PathBuf> {
             let base = if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
                 PathBuf::from(xdg)
             } else {
-                dirs::home_dir()?.join(".local/share")
+                oxifont_core::platform_dirs::home_dir()?.join(".local/share")
             };
             let raw = raw.trim_start_matches('/');
             Some(base.join(raw))
@@ -117,7 +117,7 @@ fn expand_include(raw: &str, prefix: Option<&str>) -> Option<PathBuf> {
             let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
                 PathBuf::from(xdg)
             } else {
-                dirs::home_dir()?.join(".config")
+                oxifont_core::platform_dirs::home_dir()?.join(".config")
             };
             let raw = raw.trim_start_matches('/');
             Some(base.join(raw))

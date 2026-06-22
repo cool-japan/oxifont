@@ -13,7 +13,6 @@ categories = ["text-processing", "graphics"]
 [features]
 default = ["pure", "discovery"]
 pure   = ["dep:oxifont-adapter-pure"]
-native = ["dep:oxifont-adapter-native"]
 db     = ["dep:oxifont-db"]
 woff1  = ["dep:oxifont-webfont", "oxifont-webfont/woff1"]
 woff2  = ["dep:oxifont-webfont", "oxifont-webfont/woff2"]
@@ -33,10 +32,6 @@ oxifont-core = { workspace = true }
 oxifont-parser = { workspace = true }
 
 [dependencies.oxifont-adapter-pure]
-workspace = true
-optional = true
-
-[dependencies.oxifont-adapter-native]
 workspace = true
 optional = true
 

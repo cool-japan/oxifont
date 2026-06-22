@@ -14,7 +14,6 @@
 //! |---------|---------|---------|
 //! | `pure` | yes | [`FontDatabase`] from filesystem scan via `oxifont-adapter-pure` |
 //! | `discovery` | yes | [`discovery`] module: [`discovery::system_font_dirs`], [`discovery::scan_dirs`] |
-//! | `native` | no | [`native`] module: [`native::NativeCatalog`] via CoreText (macOS) or DirectWrite (Windows) |
 //! | `db` | no | [`db`] module: [`db::FontDatabase`] with CSS Level 4 query engine |
 //! | `woff1` | no | [`webfont`] module: WOFF1 encode and decode functions |
 //! | `woff2` | no | [`webfont`] module: WOFF2 encode and decode functions |
@@ -57,7 +56,6 @@
 //! - `oxifont-parser` — TTF/OTF/TTC parsing (re-exported as [`parser`] module and top-level [`ParsedFace`])
 //! - `oxifont-discovery` — filesystem font directory scanning (re-exported as [`discovery`] module, feature `discovery`)
 //! - `oxifont-adapter-pure` — pure Rust font catalog from filesystem (re-exported as [`FontDatabase`], feature `pure`)
-//! - `oxifont-adapter-native` — CoreText/DirectWrite system enumeration (re-exported as [`native`] module, feature `native`)
 //! - `oxifont-db` — in-memory indexed font database with CSS matching (re-exported as [`db`] module, feature `db`)
 //! - `oxifont-subset` — TrueType/CFF glyph subsetting (re-exported as [`subset`] module, feature `subset`)
 //! - `oxifont-webfont` — WOFF1/WOFF2 encode and decode (re-exported as [`webfont`] module, features `woff1`/`woff2`)
@@ -146,31 +144,6 @@ pub mod webfont {
     pub use oxifont_webfont::*;
 }
 
-/// Native OS font catalog (CoreText on macOS; DirectWrite on Windows).
-///
-/// Requires the `native` Cargo feature.
-#[cfg(feature = "native")]
-pub mod native {
-    pub use oxifont_adapter_native::NativeCatalog;
-}
-
-/// Build a native catalog from the OS font APIs.
-///
-/// On macOS this calls `CTFontCollectionCreateFromAvailableFonts`.
-/// On Windows this calls `DWriteCreateFactory` → `IDWriteFontCollection`
-/// enumeration via the `windows` 0.62 crate.
-/// On other platforms this is a type alias for `FontDatabase::system()`.
-///
-/// Requires the `native` Cargo feature.
-#[cfg(feature = "native")]
-pub fn system_with_native() -> Result<native::NativeCatalog, FontError> {
-    // `system()` is the uniform cross-platform constructor: the native
-    // CoreText/DirectWrite backends mirror `oxifont_adapter_pure::FontDatabase::system()`
-    // (the non-macOS/Windows alias for `NativeCatalog`) so this compiles on every
-    // platform without `#[cfg]` guards.
-    Ok(native::NativeCatalog::system()?)
-}
-
 /// Font subsetting (reduce a font to a glyph subset).
 ///
 /// Requires the `subset` Cargo feature.
@@ -183,63 +156,16 @@ pub mod subset {
 // system_fonts(): unified system font discovery returning FontDatabase
 // ---------------------------------------------------------------------------
 
-/// Return a [`db::FontDatabase`] populated from the best available system font
-/// source.
-///
-/// On macOS when the `native` feature is enabled, the CoreText font collection
-/// is enumerated and each discovered font file is loaded into the database.  If
-/// the native adapter fails (e.g. on a minimal system), the function falls back
-/// to the pure filesystem scan provided by the `pure` or default
-/// `oxifont_db::FontDatabase::system` path.
-///
-/// On all other platforms (including Windows with DirectWrite disabled and
-/// Linux), the function uses `oxifont_db::FontDatabase::system()` which scans
-/// the OS-default font directories with `walkdir`.
-///
-/// # Errors
-/// Returns [`FontError::ParseError`] if the underlying database scan returns an
-/// error.  Individual font files that cannot be parsed are silently skipped by
-/// both the native and pure backends; an error here indicates a systemic
-/// failure (e.g. unable to determine the cache directory).
-///
-/// Requires the `db` Cargo feature and at least one of `native` or `pure`.
-#[cfg(all(feature = "db", feature = "native", target_os = "macos"))]
-pub fn system_fonts() -> Result<db::FontDatabase, FontError> {
-    // Attempt to enumerate via CoreText first.
-    match native::NativeCatalog::load() {
-        Ok(catalog) => {
-            use oxifont_core::FontCatalog as _;
-            let mut database = db::FontDatabase::new();
-            for face_info in catalog.faces() {
-                // Each FaceInfo holds the on-disk path; load the file into the
-                // indexed database.  Per-file errors are silently skipped so
-                // that a single unreadable font does not abort the scan.
-                let _ = database.load_file(&face_info.path);
-            }
-            Ok(database)
-        }
-        Err(_) => {
-            // Native adapter failed — fall back to oxifont_db's own scan.
-            db::FontDatabase::system().map_err(|e| FontError::ParseError(e.to_string()))
-        }
-    }
-}
-
 /// Return a [`db::FontDatabase`] populated from the pure filesystem scan.
 ///
-/// This variant is used on non-macOS platforms (or when the `native` feature is
-/// disabled) and simply delegates to `db::FontDatabase::system()`, which
-/// scans the OS-default font directories with `walkdir`.
+/// Delegates to `db::FontDatabase::system()`, which scans the OS-default font
+/// directories with `walkdir`.
 ///
 /// # Errors
 /// Returns [`FontError::ParseError`] if the database scan fails.
 ///
-/// Requires the `db` Cargo feature and at least one of `native` or `pure`.
-#[cfg(all(
-    feature = "db",
-    any(feature = "native", feature = "pure"),
-    not(all(feature = "native", target_os = "macos"))
-))]
+/// Requires the `db` and `pure` Cargo features.
+#[cfg(all(feature = "db", feature = "pure"))]
 pub fn system_fonts() -> Result<db::FontDatabase, FontError> {
     db::FontDatabase::system().map_err(|e| FontError::ParseError(e.to_string()))
 }
@@ -319,26 +245,9 @@ pub fn bundled_fonts() -> bundled::BundledCatalog {
 /// Requires the `db` and `bundled-noto` Cargo features.
 #[cfg(all(feature = "db", feature = "bundled-noto"))]
 pub fn system_fonts_with_bundled_fallback() -> Result<db::FontDatabase, FontError> {
-    // system_fonts() is only defined when db + (native or pure) is active.
+    // system_fonts() is only defined when db + pure is active.
     // We replicate the same logic here rather than calling system_fonts()
     // to avoid a circular cfg dependency.
-    #[cfg(all(feature = "native", target_os = "macos"))]
-    let mut database = {
-        match native::NativeCatalog::load() {
-            Ok(catalog) => {
-                use oxifont_core::FontCatalog as _;
-                let mut db = db::FontDatabase::new();
-                for face_info in catalog.faces() {
-                    let _ = db.load_file(&face_info.path);
-                }
-                db
-            }
-            Err(_) => {
-                db::FontDatabase::system().map_err(|e| FontError::ParseError(e.to_string()))?
-            }
-        }
-    };
-    #[cfg(not(all(feature = "native", target_os = "macos")))]
     let mut database =
         db::FontDatabase::system().map_err(|e| FontError::ParseError(e.to_string()))?;
 

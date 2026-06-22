@@ -11,14 +11,14 @@ The scanner handles TTF/OTF (one face each), TTC/OTC collections (multiple faces
 
 ```toml
 [dependencies]
-oxifont-discovery = "0.1.0"
+oxifont-discovery = "0.2.0"
 ```
 
 WOFF1 + WOFF2 decoding is on by default. To add parallel scanning, memory-mapped I/O, or fontconfig `fonts.conf` parsing:
 
 ```toml
 [dependencies]
-oxifont-discovery = { version = "0.1.0", features = ["rayon", "mmap", "fontconfig"] }
+oxifont-discovery = { version = "0.2.0", features = ["rayon", "mmap", "fontconfig"] }
 ```
 
 ## Quick Start

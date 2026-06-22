@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.89"
 authors = ["COOLJAPAN OU (Team Kitasan)"]
@@ -23,15 +23,15 @@ repository = "https://github.com/cool-japan/oxifont"
 description = "OxiFont is the COOLJAPAN Pure Rust font discovery + font parsing layer for the oxi* ecosystem."
 
 [workspace.dependencies]
-oxifont-core        = { path = "crates/oxifont-core",        version = "0.2.0" }
-oxifont-parser      = { path = "crates/oxifont-parser",      version = "0.2.0" }
-oxifont-discovery   = { path = "crates/oxifont-discovery",   version = "0.2.0" }
-oxifont-adapter-pure = { path = "crates/oxifont-adapter-pure", version = "0.2.0" }
-oxifont-db          = { path = "crates/oxifont-db",          version = "0.2.0" }
-oxifont-webfont        = { path = "crates/oxifont-webfont",        version = "0.2.0" }
-oxifont-subset         = { path = "crates/oxifont-subset",         version = "0.2.0" }
-oxifont-adapter-native = { path = "crates/oxifont-adapter-native", version = "0.2.0" }
-oxifont-bundled        = { path = "crates/oxifont-bundled",        version = "0.2.0" }
+oxifont-core        = { path = "crates/oxifont-core",        version = "0.2.1" }
+oxifont-parser      = { path = "crates/oxifont-parser",      version = "0.2.1" }
+oxifont-discovery   = { path = "crates/oxifont-discovery",   version = "0.2.1" }
+oxifont-adapter-pure = { path = "crates/oxifont-adapter-pure", version = "0.2.1" }
+oxifont-db          = { path = "crates/oxifont-db",          version = "0.2.1" }
+oxifont-webfont        = { path = "crates/oxifont-webfont",        version = "0.2.1" }
+oxifont-subset         = { path = "crates/oxifont-subset",         version = "0.2.1" }
+oxifont-adapter-native = { path = "crates/oxifont-adapter-native", version = "0.2.1" }
+oxifont-bundled        = { path = "crates/oxifont-bundled",        version = "0.2.1" }
 oxiarc-deflate         = { version = "0.3.3" }
 oxiarc-brotli          = { version = "0.3.3" }
 

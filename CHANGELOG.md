@@ -7,6 +7,16 @@ OxiFont adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.2.1] - Unreleased
+
+### Added
+
+### Changed
+
+### Fixed
+
+---
+
 ## [0.2.0] - 2026-06-22
 
 ### Added
@@ -28,6 +38,7 @@ OxiFont adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Pure Rust Policy v2 L1 compliance**: `yeslogic-fontconfig-sys` (a C FFI crate) is no longer reachable from the `oxifont` facade crate under any feature combination; it remains available only through `oxifont-adapter-native` where FFI is intentional and feature-gated.
 
+[0.2.1]: https://github.com/cool-japan/oxifont/releases/tag/v0.2.1
 [0.2.0]: https://github.com/cool-japan/oxifont/releases/tag/v0.2.0
 
 ---

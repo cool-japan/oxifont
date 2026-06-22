@@ -12,16 +12,16 @@ Out of the box (`default = ["pure", "discovery"]`) you get filesystem font disco
 ```toml
 [dependencies]
 # Default: pure-Rust filesystem discovery + FontDatabase
-oxifont = "0.2.0"
+oxifont = "0.2"
 
 # CSS Level 4 query engine
-oxifont = { version = "0.2.0", features = ["db"] }
+oxifont = { version = "0.2", features = ["db"] }
 
 # WOFF2 decode/encode + glyph subsetting pipeline
-oxifont = { version = "0.2.0", features = ["woff2", "subset"] }
+oxifont = { version = "0.2", features = ["woff2", "subset"] }
 
 # Bundled Noto fonts for environments without system fonts (WASM, CI, containers)
-oxifont = { version = "0.2.0", features = ["bundled-noto"] }
+oxifont = { version = "0.2", features = ["bundled-noto"] }
 ```
 
 ## Quick Start

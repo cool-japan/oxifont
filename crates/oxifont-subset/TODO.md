@@ -1,7 +1,7 @@
 # oxifont-subset TODO
 
 ## Status
-Pure Rust OpenType font subsetter. Takes SFNT bytes + codepoints, produces minimal SFNT with only requested glyphs. Rewrites glyf/loca/cmap/hmtx/maxp/head/hhea/post/name tables. Handles composite glyph closure, format-4 and format-12 cmap, HVAR/VVAR delta-set index map rewriting. Copies fvar/gvar/avar verbatim. 4 source files, ~750 SLOC. Functional for basic TrueType subsetting but missing CFF support and advanced table handling.
+Pure Rust OpenType font subsetter. Takes SFNT bytes + codepoints/glyph IDs, produces minimal SFNT. Handles TrueType (glyf/loca) and CFF/CFF2 outline formats. Rewrites: cmap (format 4/12), hmtx/vmtx, maxp, head, hhea/vhea, post v3, name, OS/2, kern. Layout: GSUB/GPOS/GDEF subtable rewriting with coverage and classdef remapping. Color: COLR/CPAL, CBDT/CBLC, SVG, sbix, MATH. Variable: gvar per-glyph tuple subsetting, HVAR/VVAR, fvar/avar. High-level entry points: `subset_font`, `subset_font_with_options`, `subset_by_gids`, `subset_font_for_web`, `subset_font_for_pdf`, `PdfFontSubsetter` builder. Optional `parallel` feature (rayon). ~4200 SLOC, 42 public items, 0 stubs. M5–M6 subsetting complete.
 
 ## Core Implementation
 - [x] Implement CFF (Type 1) outline subsetting: parse CFF CharStrings, rebuild CFF header/INDEX/Top DICT/Private DICT for subset glyph set (~300 SLOC)

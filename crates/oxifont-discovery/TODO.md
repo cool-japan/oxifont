@@ -1,7 +1,7 @@
 # oxifont-discovery TODO
 
 ## Status
-Pure Rust OS font-directory scanner. Enumerates well-known font directories for macOS, Linux, and Windows without native library dependencies. Uses `walkdir` for recursive scanning and `oxifont-parser` for parsing discovered files. ~132 SLOC. Functional but lacks parallelism, caching, and broad format support.
+Pure Rust OS font-directory scanner. Enumerates well-known font directories for macOS, Linux, Windows, BSD, Android without native libraries. Uses `walkdir` + `oxifont-parser`. Optional `rayon` parallelism, `mmap` (memmap2), fontconfig XML `fonts.conf` parsing (`fontconfig` feature + `quick-xml`), WOFF1/WOFF2 file scanning (behind `woff1`/`woff2` features, on by default). 27 public items, 0 stubs. `fontconfig.rs` + `sfnt_partial.rs` for fast metadata-only scans.
 
 ## Core Implementation
 - [x] Add parallel directory scanning using rayon for faster enumeration on large font directories (~40 SLOC)

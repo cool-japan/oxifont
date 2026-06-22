@@ -1,7 +1,7 @@
 # oxifont-bundled TODO
 
 ## Status
-v0.1.3 — 2026-06-19. `BundledFont` struct with `parsed: OnceLock<Arc<ParsedFace>>` field and `parsed_face()` method (OnceLock cache). `SANS_ITALIC` and `MONO_REGULAR` static constants (variable-font TTFs). `ALL_FONT_REFS` extended to 5 entries. `cargo check --target wasm32-unknown-unknown` passes. 56 tests pass with `--all-features`. Zero clippy warnings in all configurations.
+v0.2.0 — 2026-06-22. `BundledFont` struct, `BundledCatalog`, `BundledFontProvider`. Features: `bundled-noto`, `-serif`, `-emoji`, `-cjk-{jp,kr,sc,tc}`, `compressed`. 56+ tests passing with `--all-features`. Zero clippy warnings.
 
 ## Core Implementation
 - [x] Create `Cargo.toml` with `name = "oxifont-bundled"`, workspace version/edition/authors/license/repository, dependency on `oxifont-core`

@@ -11,14 +11,14 @@ The subsetter handles both TrueType (`glyf`/`loca`) and CFF/CFF2 outline formats
 
 ```toml
 [dependencies]
-oxifont-subset = "0.1.0"
+oxifont-subset = "0.2.0"
 ```
 
 With parallel table rewriting:
 
 ```toml
 [dependencies]
-oxifont-subset = { version = "0.1.0", features = ["parallel"] }
+oxifont-subset = { version = "0.2.0", features = ["parallel"] }
 ```
 
 ## Quick Start

@@ -1,7 +1,7 @@
 # oxifont-parser TODO
 
 ## Status
-Wraps `ttf_parser` with owned byte storage (`Arc<[u8]>`) so `ParsedFace` outlives the original byte slice. Implements `FontFace` trait. Extracts family name, style, weight, monospace flag, units_per_em, glyph mapping, advance widths, and variable axes. ~228 SLOC. Solid M1 implementation but missing advanced OpenType table access and outline extraction.
+Wraps `ttf-parser` with owned `Arc<[u8]>` storage so `ParsedFace` is cheaply `Clone`/`Send`/`Sync`. Implements `FontFace` trait. Exposes `face_count()`, `ParsedFace` with methods for table lookup, glyph outlines + bounding boxes, vertical origin, GSUB/GPOS feature/script/language enumeration, variable font coordinate normalization, CFF detection, preloading. `GlyphOutlineData` for outline extraction. `ParsedFaceBuilder`. ~1290 SLOC, 36 public items, 0 stubs.
 
 ## Core Implementation
 - [x] Expose `FontMetrics` from OS/2 and hhea tables (ascender, descender, line_gap, cap_height, x_height, underline_position/thickness, strikeout_position/thickness) (~60 SLOC)

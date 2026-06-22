@@ -1,7 +1,7 @@
 # oxifont-webfont TODO
 
 ## Status
-Pure Rust WOFF1 and WOFF2 decoder. WOFF1: zlib decompression via `oxiarc-deflate`, header/directory parsing, checksum verification. WOFF2: brotli decompression via `oxiarc-brotli`, transformed glyf/loca/hmtx reconstruction (Felzenszwalb triplet decoding, 255UInt16, composite glyph handling, bbox bitmap, instruction streams), SFNT assembly with checkSumAdjustment. 7 source files, ~1077 SLOC across woff1.rs, woff2/mod.rs, woff2/header.rs, woff2/glyf.rs, woff2/hmtx.rs, sfnt.rs, error.rs. Decoders are feature-gated. Missing WOFF encoding and collection support.
+Pure Rust WOFF1 and WOFF2 encode + decode codec. WOFF1: zlib via `oxiarc-deflate`, header/directory parsing, checksum verification, encode and decode. WOFF2: brotli via `oxiarc-brotli`, full decode (transformed glyf/loca/hmtx reconstruction, triplet decoding, 255UInt16, composite, bbox bitmap, TTC) and full encode (forward glyf/loca transforms, varint serialization, UIntBase128/255UInt16). `detect.rs` for autodetection. `sfnt.rs` for table assembly. 9 source files, ~1800 SLOC. Full encode+decode pipeline for both formats. 45 public items, 0 stubs.
 
 ## Core Implementation
 - [x] Implement WOFF1 encoder: compress SFNT tables with zlib, write WOFF1 header/directory (~150 SLOC) (planned 2026-05-25)

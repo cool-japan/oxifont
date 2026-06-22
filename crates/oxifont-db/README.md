@@ -11,14 +11,14 @@ The store is a flat `Vec<FaceInfo>` with secondary case-folded family-name and P
 
 ```toml
 [dependencies]
-oxifont-db = "0.1.0"
+oxifont-db = "0.2.0"
 ```
 
 With the opt-in disk cache:
 
 ```toml
 [dependencies]
-oxifont-db = { version = "0.1.0", features = ["cache"] }
+oxifont-db = { version = "0.2.0", features = ["cache"] }
 ```
 
 ## Quick Start

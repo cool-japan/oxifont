@@ -12,9 +12,9 @@ metrics, CMap, OS/2 and `name` table data, performing CSS Level 4 family/weight/
 Unicode codepoint set, and encoding the result as WOFF1 or WOFF2. Rasterization, hinting execution, shaping, and layout are
 **out of scope** by design — they belong in `oxitext`.
 
-## Status: 0.2.0 — 2026-06-22
+## Status: 0.2.1 — Unreleased
 
-Full implementation across all M0–M7 milestones. 10 crates, ~31 000 Rust SLOC, 955 tests passing (excluding slow native CoreText/DirectWrite tests).
+Full implementation across all M0–M7 milestones. 10 crates, ~31 000 Rust SLOC, 955 tests passing on v0.2.1 (Unreleased) (excluding slow native CoreText/DirectWrite tests).
 
 ## Feature Flags
 

@@ -1,7 +1,7 @@
 # OxiFont Project TODO
 
 ## Status
-Pure Rust font discovery, parsing, subsetting, webfont processing, and TrueType hinting execution. **v0.2.1.**
+Pure Rust font discovery, parsing, subsetting, webfont processing, and TrueType hinting execution. **v0.2.2.**
 11 crates in workspace, ~34 500 Rust SLOC, 1020 tests passing with all features enabled (0 failures, 2 skipped; 962 passing under default features). M0–M7 milestones complete.
 Full pipeline: TTF/OTF/TTC parsing, filesystem and native (CoreText/DirectWrite) font enumeration,
 CSS Fonts Level 4 matching, TrueType+CFF glyph subsetting, WOFF1/WOFF2 encode+decode,

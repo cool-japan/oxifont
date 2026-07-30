@@ -11,14 +11,14 @@ The crate is Pure Rust with `#![forbid(unsafe_code)]` and is `no_std`-compatible
 
 ```toml
 [dependencies]
-oxifont-core = "0.2.1"
+oxifont-core = "0.2.2"
 ```
 
 By default the `std` feature is enabled. For a `no_std` build:
 
 ```toml
 [dependencies]
-oxifont-core = { version = "0.2.1", default-features = false }
+oxifont-core = { version = "0.2.2", default-features = false }
 ```
 
 ## Quick Start

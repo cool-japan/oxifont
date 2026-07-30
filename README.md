@@ -12,7 +12,7 @@ metrics, CMap, OS/2 and `name` table data, performing CSS Level 4 family/weight/
 Unicode codepoint set, encoding the result as WOFF1 or WOFF2, and executing TrueType hinting bytecode to grid-fit outlines via
 `oxifont-hinting`. Pixel rasterization, shaping, and layout remain **out of scope** by design — they belong in `oxitext`.
 
-## Status: 0.2.1
+## Status: 0.2.2
 
 Full implementation across all M0–M7 milestones. 11 crates, ~34 500 Rust SLOC, 1020 tests passing with all features enabled (0 failures, 2 skipped) — 962 passing under default features.
 

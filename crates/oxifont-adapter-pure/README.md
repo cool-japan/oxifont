@@ -11,10 +11,10 @@
 
 ```toml
 [dependencies]
-oxifont-adapter-pure = "0.1.0"
+oxifont-adapter-pure = "0.2.1"
 
 # With the on-disk JSON metadata cache:
-oxifont-adapter-pure = { version = "0.1.0", features = ["cache"] }
+oxifont-adapter-pure = { version = "0.2.1", features = ["cache"] }
 ```
 
 ## Quick Start
@@ -103,8 +103,18 @@ implements [`oxifont_core::FontCatalog`].
 | `find_with_fallback(families, base_query, text) -> Option<&FaceInfo>` | Try each family in order (each resolved via `find_css`) and return the first hit |
 | `find_best_for_text(&FontQuery, text) -> Option<&FaceInfo>` | Convenience over `find_with_fallback` driven by `query.family` |
 | `load_face(&FaceInfo) -> Result<ParsedFace, FontError>` | Load and fully parse the face described by a `FaceInfo` |
+| `font_bytes(&FaceInfo) -> Result<Vec<u8>, FontError>` | Read the raw SFNT bytes for a face (no parsing); the basis for subsetting and WOFF2 encoding |
 | `faces() -> &[FaceInfo]` *(trait)* | All faces in insertion order |
 | `len()` / `is_empty()` | Face count helpers |
+
+### Database & subsetting bridges (feature-gated)
+
+| Method | Feature | Description |
+|--------|---------|-------------|
+| `into_db(self) -> oxifont_db::FontDatabase` | `db` | Consumes this catalog, converting every face into an `oxifont_db::FontDatabase` for CSS Level 4 queries via `oxifont_db::Query` |
+| `as_db(&self) -> oxifont_db::FontDatabase` | `db` | Same conversion as `into_db`, but clones faces and leaves this catalog usable afterward |
+| `subset_face(&self, &FaceInfo, &BTreeSet<char>) -> Result<Vec<u8>, FontError>` | `subset` | `font_bytes` + `oxifont_subset::subset_font`, retaining hints and the full `name` table |
+| `subset_face_for_web(&self, &FaceInfo, &BTreeSet<char>) -> Result<Vec<u8>, FontError>` | `subset` | Same as `subset_face` with web-optimised presets (hints stripped, `name` table trimmed) |
 
 ### CSS Fonts Level 4 matching
 
@@ -127,7 +137,9 @@ Generic CSS keywords resolve through a built-in alias table (e.g. `sans-serif` â
 
 | Feature | Default | Pulls in | Description |
 |---------|---------|----------|-------------|
-| `cache` | no | `serde`, `serde_json`, `dirs`, `oxifont-core/serde` | Enables `scan_cached` / `system_cached`: an mtime-keyed JSON face cache at `<cache_dir>/oxifont/oxifont_face_cache.json`. Override the directory with the `OXIFONT_CACHE_DIR` environment variable. Cache failures degrade gracefully to a cold start. |
+| `cache` | no | `serde`, `serde_json`, `oxifont-core/serde` | Enables `scan_cached` / `system_cached`: an mtime-keyed JSON face cache at `<cache_dir>/oxifont/oxifont_face_cache.json` (directory resolved via `oxifont_core::platform_dirs::cache_dir()`). Override the directory with the `OXIFONT_CACHE_DIR` environment variable. Cache failures degrade gracefully to a cold start. |
+| `db` | no | `oxifont-db` | Adds `into_db()` / `as_db()`, converting this catalog into an `oxifont_db::FontDatabase` for its CSS Level 4 `Query` engine |
+| `subset` | no | `oxifont-subset` | Adds `subset_face()` / `subset_face_for_web()`, chaining `font_bytes()` with `oxifont_subset` glyph subsetting |
 
 ## Related Crates
 

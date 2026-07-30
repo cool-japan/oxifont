@@ -1,7 +1,7 @@
 # oxifont-discovery TODO
 
 ## Status
-Pure Rust OS font-directory scanner. Enumerates well-known font directories for macOS, Linux, and Windows without native library dependencies. Uses `walkdir` for recursive scanning and `oxifont-parser` for parsing discovered files. ~132 SLOC. Functional but lacks parallelism, caching, and broad format support.
+Pure Rust OS font-directory scanner. Enumerates well-known font directories for macOS, Linux, Windows, BSD, Android without native libraries. Uses `walkdir` + `oxifont-parser`. Optional `rayon` parallelism, `mmap` (memmap2), fontconfig XML `fonts.conf` parsing (`fontconfig` feature + `quick-xml`), WOFF1/WOFF2 file scanning (behind `woff1`/`woff2` features, on by default). 27 public items, 0 stubs. `fontconfig.rs` + `sfnt_partial.rs` for fast metadata-only scans. 57 tests passing.
 
 ## Core Implementation
 - [x] Add parallel directory scanning using rayon for faster enumeration on large font directories (~40 SLOC)
@@ -19,7 +19,7 @@ Pure Rust OS font-directory scanner. Enumerates well-known font directories for 
 ## API Improvements
 - [x] Return a `ScanResult` struct with `faces: Vec<FaceInfo>` and `errors: Vec<(PathBuf, FontError)>` instead of silently swallowing errors
 - [x] Add `ScanOptions` builder: max_depth, follow_symlinks, file_extensions filter, parallel flag
-- [x] Add `scan_dirs_async()` for non-blocking font enumeration in async contexts
+- [x] Add non-blocking font enumeration — implemented as `scan_dirs_background(dirs: Vec<PathBuf>) -> JoinHandle<ScanResult>` / `scan_system_fonts_background() -> JoinHandle<ScanResult>` (`std::thread`-based; no `tokio`/`async-std` dependency, not literal `async`/`await`)
 - [x] Return scan statistics (total files scanned, total faces found, time elapsed, errors skipped)
 
 ## Testing
@@ -37,7 +37,7 @@ Pure Rust OS font-directory scanner. Enumerates well-known font directories for 
 - [x] Add optional mmap feature behind a cargo feature gate
 
 ## Integration
-- [x] Feed scan results into oxifont-db for indexed querying — done via oxifont facade `system_fonts()` which builds FontDatabase from scan results
+- [x] Feed scan results into oxifont-db for indexed querying — `oxifont-adapter-pure::FontDatabase` (built from this crate's `scan_dirs`/`system_font_dirs`) bridges into `oxifont_db::FontDatabase` via `into_db()`/`as_db()` (feature `db`); note `oxifont-db`'s own `FontDatabase::system()` walks directories independently via `walkdir` and does not call into this crate
 - [x] Coordinate with oxifont-adapter-pure to share the same scan pipeline (done 2026-05-27)
   - **Goal:** Add `scan_dirs_metadata_only(paths: &[PathBuf]) -> ScanResult` that reads only SFNT header + `name`/`OS/2`/`cmap` tables per font file (via `File::seek` + `read_exact`), populating all `FaceInfo` fields including `unicode_ranges` from cmap. Eager `scan_dirs` and lazy `scan_dirs_metadata_only` share `read_face_metadata_partial`.
   - **Design:** New `src/sfnt_partial.rs` (~100 lines) — reads SFNT table directory entries, seeks to `name`/`OS/2`/`cmap` offsets, reads those 3 tables into `Vec<u8>` buffers, feeds them through extracted pure parsing helpers. `scan_dirs_metadata_only` iterates files, calls `read_face_metadata_partial`, skips on error (same as eager path). Adapter-pure's `scan_lazy` calls this function.

@@ -1,0 +1,18 @@
+[package]
+name = "oxifont-hinting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure Rust TrueType bytecode hinting interpreter (grid-fitting VM) for OxiFont"
+keywords = ["font", "truetype", "hinting", "bytecode", "grid-fitting"]
+categories = ["text-processing", "graphics"]
+
+[dependencies]
+oxifont-core = { workspace = true }
+
+[dev-dependencies]
+oxifont-bundled = { path = "../oxifont-bundled", features = ["bundled-noto"] }
+oxifont-parser  = { path = "../oxifont-parser" }

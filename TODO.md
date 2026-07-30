@@ -1,11 +1,12 @@
 # OxiFont Project TODO
 
 ## Status
-Pure Rust font discovery, parsing, subsetting, and webfont processing. **v0.2.0 — 2026-06-22.**
-10 crates in workspace, ~31 000 Rust SLOC, 955 tests passing (0 failures; excludes slow native CoreText/DirectWrite tests). M0–M7 milestones complete.
+Pure Rust font discovery, parsing, subsetting, webfont processing, and TrueType hinting execution. **v0.2.1.**
+11 crates in workspace, ~34 500 Rust SLOC, 1020 tests passing with all features enabled (0 failures, 2 skipped; 962 passing under default features). M0–M7 milestones complete.
 Full pipeline: TTF/OTF/TTC parsing, filesystem and native (CoreText/DirectWrite) font enumeration,
 CSS Fonts Level 4 matching, TrueType+CFF glyph subsetting, WOFF1/WOFF2 encode+decode,
-bundled Noto fonts, SfntTableMap shared table directory, COLR/CBDT/SVG/sbix/MATH subsetting.
+bundled Noto fonts, SfntTableMap shared table directory, COLR/CBDT/SVG/sbix/MATH subsetting,
+TrueType bytecode hinting execution (grid-fitting VM).
 
 ## Milestone Summary
 
@@ -66,10 +67,10 @@ bundled Noto fonts, SfntTableMap shared table directory, COLR/CBDT/SVG/sbix/MATH
 - [x] Async font loading APIs
 - [x] GDEF table subsetting
 
-### M7 (In Progress)
+### M7 (Complete)
 - [x] oxifont-bundled: SIL-OFL-licensed Noto font subsets for environments without system fonts
 - [x] Binary cache format (replace JSON with compact binary for faster cold start)
-- [ ] TrueType hinting interpreter (deferred: modern CFF outlines and oxitext pseudo-hinting cover realistic use cases) **DEFERRED: modern CFF outlines and oxitext pseudo-hinting cover realistic rendering use cases; a full hinting interpreter adds ~2000 SLOC of complex bytecode execution for marginal quality gain at target resolutions.**
+- [x] TrueType hinting interpreter — DONE: implemented as the new `oxifont-hinting` crate (bytecode VM executing `fpgm`/`prep`/per-glyph instruction streams, grid-fitting outlines to 26.6 fixed-point coordinates; never panics on hostile bytecode). Supersedes the deferral previously noted here; see the Production-Readiness Backlog F1 entry below for full detail.
 
 ## Cross-Crate Tasks
 - [x] Unify `VariationAxis` (oxifont-core) and `VariableAxis` (oxifont-db) into a single shared type
@@ -100,3 +101,21 @@ See individual TODO.md files in each subcrate directory:
 - `crates/oxifont-subset/TODO.md`
 - `crates/oxifont-webfont/TODO.md`
 - `crates/oxifont/TODO.md`
+
+
+---
+
+<!-- production-readiness-backlog 2026-07-16 -->
+## Production-Readiness Backlog — 2026-07-16
+
+_Consolidated from static audit + Opus adversarial bug-hunt (48 verified defects across noffi) + baseline nextest/clippy + design investigation. See `../NOFFI_PRODUCTION_BACKLOG.md` for the full cross-project list and severity/model legend. Not implemented; no commits._
+
+**Confirmed bugs — Opus-verified — all 4 now FIXED (verified in working tree 2026-07-17):**
+- [x] **S · high** `oxifont-webfont/src/woff2/glyf.rs:1373` — 255UInt16 decoder: `ONE_MORE_BYTE_CODE1` (255) now correctly maps to `byte + 253` and `ONE_MORE_BYTE_CODE2` (254) to `byte + 506`; no more 2-byte-word misread. Verified against WOFF2 §5.1 `Read255UShort`.
+- [x] **S · high** `oxifont-webfont/src/woff2/header.rs:281` — `read_255_u16_slice` carries the same corrected 253/254/255 code mapping as the decoder above (collection-header parsing).
+- [x] **S · med** `oxifont-webfont/src/woff2/glyf.rs:1171` — `total_points` is now validated against `flag_cur.remaining()` (with a `checked_add` overflow guard on the running sum) *before* any point-sized `Vec::with_capacity` allocation, closing the huge-alloc DoS.
+- [x] **S · med** `oxifont-subset/src/cmap.rs:73` — format-4 builder now computes `length` via `checked_mul(8).and_then(checked_add(16))` bounded to `u16::MAX` and returns a typed `SubsetError::InvalidFont` instead of overflowing when a subset exceeds the ~8189-segment addressable size.
+**Designed / audit:**
+- [x] **A/hard/Opus · F1** TrueType hinting interpreter — DONE: new `oxifont-hinting` crate (workspace member, v0.2.1, `#![forbid(unsafe_code)]`, ~4,260 SLOC across `interp.rs`/`dispatch.rs`/`ops_*.rs`/`state.rs`/`math.rs`/`font.rs`, all files under the 2000-line policy limit). Runs `fpgm`/`prep`/per-glyph instruction streams over a `SfntTableMap`, bounds-checks every stack/storage/CVT/point/jump access, and never panics on hostile bytecode (typed `HintingError` instead). M7's "TrueType hinting interpreter (deferred)" line above is superseded by this crate.
+- [x] **A/med/Opus · F2** bundled 0-byte fonts fix — DONE: CJK bundling is now honest opt-in. `bundled-noto-cjk-{jp,kr,sc,tc}` features expose `noto_sans_<lang>_regular()` accessors that read the real font from `OXIFONT_NOTO_CJK_<LANG>` env var or an in-tree `fonts/cjk-<lang>/` file at build time; when absent they return a typed `oxifont_core::FontError::NotFound` — never a fake/empty byte slice. See `crates/oxifont-bundled/src/lib.rs` and its TODO.md.
+- [x] **B/easy · F3** unwrap reduction (29 non-test) — DONE 2026-07-17: audited `oxifont-webfont` (incl. `woff2/header.rs`, `woff2/glyf.rs`), `oxifont-parser`, `oxifont-adapter-pure`, `oxifont` lib, plus `oxifont-subset`/`oxifont-adapter-native`; zero non-test `.unwrap()`/`.expect()` remain reachable from untrusted font-input parsing (all remaining hits are `#[cfg(test)]`-gated or doc-comment examples; the handful in `oxifont-subset` are guarded immediately above by an `is_empty()` check and left with a `"non-empty"` justification comment). Added root `SECURITY.md` + `CONTRIBUTING.md`. Confirmed all 4 fuzz crates (`oxifont-webfont`, `oxifont-parser`, `oxifont-db`, `oxifont-subset`; 8 targets total) build with `cargo +nightly fuzz build`. `cargo nextest run --workspace`: 962 passed, 2 skipped. `cargo clippy --all-targets --workspace -- -D warnings`: clean.

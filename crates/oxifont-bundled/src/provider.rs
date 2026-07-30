@@ -3,8 +3,9 @@
 /// Provides static byte slices for all bundled SIL-OFL-1.1 Noto fonts.
 ///
 /// Entries are only present when the corresponding Cargo feature is enabled.
-/// CJK entries are present but **zero-length** until the real font files are
-/// placed in `crates/oxifont-bundled/fonts/cjk-*/` (see lib.rs for details).
+/// CJK entries appear **only** when a real font was supplied at build time (see
+/// the crate README recipe); otherwise they are omitted entirely — the provider
+/// never exposes an empty or fabricated CJK font.
 ///
 /// # Example
 /// ```
@@ -36,8 +37,8 @@ impl BundledFontProvider {
     /// Bytes are a `'static` slice pointing directly into the compiled binary.
     ///
     /// CJK entries are included only when the corresponding feature is active
-    /// *and* the font file was non-empty at compile time. Zero-length placeholder
-    /// fonts are silently omitted from this list.
+    /// *and* a real font was supplied at build time. When no CJK font was
+    /// supplied the entry is omitted; an empty or fabricated font is never listed.
     pub fn font_data(&self) -> Vec<(&'static str, &'static [u8])> {
         #[allow(unused_mut)]
         let mut fonts: Vec<(&'static str, &'static [u8])> = Vec::new();
@@ -49,27 +50,35 @@ impl BundledFontProvider {
             fonts.push(("NotoSerif-Regular", crate::NOTO_SERIF_REGULAR));
         }
 
-        // CJK entries: only include when the embedded bytes are non-empty
-        // (zero-byte placeholders are silently skipped so callers never see
-        // a corrupt "font" that fails to parse).
+        // CJK entries: only include when a real font was supplied at build time.
+        // The accessors return `Err(FontError::NotFound)` when not bundled, so a
+        // caller never sees an empty or fabricated "font" that fails to parse.
         #[cfg(feature = "bundled-noto-cjk-jp")]
-        if !crate::NOTO_SANS_JP_REGULAR.is_empty() {
-            fonts.push(("NotoSansJP-Regular", crate::NOTO_SANS_JP_REGULAR));
+        if let Ok(bytes) = crate::noto_sans_jp_regular() {
+            if !bytes.is_empty() {
+                fonts.push(("NotoSansJP-Regular", bytes));
+            }
         }
 
         #[cfg(feature = "bundled-noto-cjk-kr")]
-        if !crate::NOTO_SANS_KR_REGULAR.is_empty() {
-            fonts.push(("NotoSansKR-Regular", crate::NOTO_SANS_KR_REGULAR));
+        if let Ok(bytes) = crate::noto_sans_kr_regular() {
+            if !bytes.is_empty() {
+                fonts.push(("NotoSansKR-Regular", bytes));
+            }
         }
 
         #[cfg(feature = "bundled-noto-cjk-sc")]
-        if !crate::NOTO_SANS_SC_REGULAR.is_empty() {
-            fonts.push(("NotoSansSC-Regular", crate::NOTO_SANS_SC_REGULAR));
+        if let Ok(bytes) = crate::noto_sans_sc_regular() {
+            if !bytes.is_empty() {
+                fonts.push(("NotoSansSC-Regular", bytes));
+            }
         }
 
         #[cfg(feature = "bundled-noto-cjk-tc")]
-        if !crate::NOTO_SANS_TC_REGULAR.is_empty() {
-            fonts.push(("NotoSansTC-Regular", crate::NOTO_SANS_TC_REGULAR));
+        if let Ok(bytes) = crate::noto_sans_tc_regular() {
+            if !bytes.is_empty() {
+                fonts.push(("NotoSansTC-Regular", bytes));
+            }
         }
 
         fonts
@@ -78,7 +87,7 @@ impl BundledFontProvider {
     /// Returns font data for a specific font by its stable name identifier.
     ///
     /// Returns `None` when the font is not bundled (feature not enabled) or
-    /// when the font is a zero-byte CJK placeholder.
+    /// when a CJK font was requested but no real font was supplied at build time.
     ///
     /// # Example
     /// ```

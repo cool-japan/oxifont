@@ -9,12 +9,12 @@ It replaces the `fontconfig` + `freetype` C/C++ dependency pair with zero-FFI Ru
 
 OxiFont covers: enumerating installed fonts on Linux/macOS/Windows, parsing TTF/OTF/TTC/WOFF/WOFF2 byte streams, exposing glyph
 metrics, CMap, OS/2 and `name` table data, performing CSS Level 4 family/weight/style/stretch matching, subsetting fonts to a
-Unicode codepoint set, and encoding the result as WOFF1 or WOFF2. Rasterization, hinting execution, shaping, and layout are
-**out of scope** by design — they belong in `oxitext`.
+Unicode codepoint set, encoding the result as WOFF1 or WOFF2, and executing TrueType hinting bytecode to grid-fit outlines via
+`oxifont-hinting`. Pixel rasterization, shaping, and layout remain **out of scope** by design — they belong in `oxitext`.
 
-## Status: 0.2.0 — 2026-06-22
+## Status: 0.2.1
 
-Full implementation across all M0–M7 milestones. 10 crates, ~31 000 Rust SLOC, 955 tests passing (excluding slow native CoreText/DirectWrite tests).
+Full implementation across all M0–M7 milestones. 11 crates, ~34 500 Rust SLOC, 1020 tests passing with all features enabled (0 failures, 2 skipped) — 962 passing under default features.
 
 ## Feature Flags
 
@@ -103,6 +103,7 @@ std::fs::write("subset.woff2", woff2).unwrap();
 | [`oxifont-discovery`](crates/oxifont-discovery/) | Pure Rust OS font directory scanner (macOS/Linux/Windows); `walkdir`-based; optional fontconfig XML config parsing |
 | [`oxifont-adapter-pure`](crates/oxifont-adapter-pure/) | `FontDatabase` catalog from filesystem scan; CSS generic-family aliases; optional disk cache |
 | [`oxifont-adapter-native`](crates/oxifont-adapter-native/) | CoreText (macOS) and DirectWrite (Windows) native font enumeration behind the `native` feature |
+| [`oxifont-hinting`](crates/oxifont-hinting/) | Pure Rust TrueType bytecode hinting interpreter (grid-fitting VM); `HintingEngine` runs `fpgm`/`prep`/per-glyph instructions, bounds-checked against hostile bytecode; depends only on `oxifont-core` |
 | [`oxifont-db`](crates/oxifont-db/) | In-memory indexed database; CSS Fonts Level 4 §4.5 matching; 60+ BCP-47 locale mappings; `Query` builder; optional binary disk cache |
 | [`oxifont-subset`](crates/oxifont-subset/) | TrueType and CFF/CFF2 glyph subsetter; GSUB/GPOS/GDEF pruning; HVAR/VVAR rewriting; COLR/CPAL, CBDT, SVG, sbix, MATH subsetting; variable font support |
 | [`oxifont-webfont`](crates/oxifont-webfont/) | WOFF1 + WOFF2 decode and encode; transformed glyf/loca/hmtx reconstruction; streaming WOFF2 decoder; font-format autodetection |
@@ -123,19 +124,23 @@ oxifont (facade)
 └── oxifont-bundled        (embedded Noto fonts)      [bundled-* features]
 
 oxifont-adapter-native (CoreText / DirectWrite)       [depend on directly; native feature]
+oxifont-hinting (TrueType bytecode hinting VM)        [depend on directly; not re-exported]
 ```
 
 All default features use **zero FFI**. Native platform APIs (CoreText, DirectWrite)
 are exposed through `oxifont-adapter-native`, which is no longer re-exported by
-the facade crate; depend on it directly and enable its `native` feature. `fontconfig`
-and `freetype` are permanently off-limits under any feature or adapter.
+the facade crate; depend on it directly and enable its `native` feature. TrueType
+hinting bytecode execution is provided by `oxifont-hinting` (depends only on
+`oxifont-core`), which is likewise not re-exported by the facade — depend on it
+directly. `fontconfig` and `freetype` are permanently off-limits under any feature
+or adapter.
 
 ## Replaces
 
 | Eliminated C/C++ dependency | Replacement |
 |---|---|
 | `fontconfig` (family matching, system enumeration) | Pure Rust fs-scan in `oxifont-discovery` + CSS Level 4 matcher in `oxifont-db` |
-| `freetype` (font parsing, glyph outlines, hinting) | `ttf-parser` in `oxifont-parser`; hinting interpreter deliberately excluded |
+| `freetype` (font parsing, glyph outlines, hinting) | `ttf-parser` in `oxifont-parser` for parsing/outlines; TrueType hinting bytecode execution via `oxifont-hinting` |
 | `harfbuzz-sys` (text shaping) | Out of scope for OxiFont — belongs to OxiText |
 
 ## Compression Policy

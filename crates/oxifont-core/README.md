@@ -11,14 +11,14 @@ The crate is Pure Rust with `#![forbid(unsafe_code)]` and is `no_std`-compatible
 
 ```toml
 [dependencies]
-oxifont-core = "0.1.0"
+oxifont-core = "0.2.1"
 ```
 
 By default the `std` feature is enabled. For a `no_std` build:
 
 ```toml
 [dependencies]
-oxifont-core = { version = "0.1.0", default-features = false }
+oxifont-core = { version = "0.2.1", default-features = false }
 ```
 
 ## Quick Start
@@ -193,6 +193,12 @@ Font-wide metrics (design units) from OS/2, hhea, head, and post: `units_per_em`
 
 A glyph path command (coordinates in design units): `MoveTo { x, y }`, `LineTo { x, y }`, `QuadTo { cx, cy, x, y }`, `CubicTo { cx1, cy1, cx2, cy2, x, y }`, `Close`.
 
+| Method | Description |
+|--------|-------------|
+| `cmd.transform(x_scale, y_scale, x_offset, y_offset)` | Linear coordinate transform (scale + offset); the canonical way to convert design-space (Y-up) to screen-space (Y-down, pixels) |
+| `cmd.coords()` | Iterator over every `(x, y)` pair in the command, including curve control points |
+| `GlyphOutline::bounding_box(cmds)` | Axis-aligned `(x_min, y_min, x_max, y_max)` of a command slice, or `None` if empty |
+
 ### `KerningPair` struct
 
 A kerning adjustment: `left_gid: u16`, `right_gid: u16`, `value: i16` (negative = tighter).
@@ -217,6 +223,15 @@ A variable-font axis record (`fvar`): `tag: [u8; 4]`, `min_value: f32`, `default
 | `map.raw()` | Original raw per-face SFNT bytes |
 | `map.num_tables()` | Number of tables in the directory |
 | `map.sfnt_version` | The SFNT version/magic field (`u32`) |
+
+### `platform_dirs` module — pure-`std` home/cache directory lookup (`std` feature only)
+
+A dependency-free reimplementation of the small subset of the [`dirs`](https://crates.io/crates/dirs) crate that OxiFont needs, keeping the whole workspace free of the `dirs-sys` FFI dependency (COOLJAPAN Pure Rust Policy). Not re-exported at the crate root — call via `oxifont_core::platform_dirs::*`.
+
+| Item | Description |
+|------|-------------|
+| `platform_dirs::home_dir() -> Option<PathBuf>` | Current user's home directory (`$HOME` on Unix; `%USERPROFILE%` or `%HOMEDRIVE%`+`%HOMEPATH%` on Windows) |
+| `platform_dirs::cache_dir() -> Option<PathBuf>` | Current user's cache directory (`$XDG_CACHE_HOME` or `~/.cache` on Linux; `~/Library/Caches` on macOS; `%LOCALAPPDATA%` on Windows) |
 
 ### `FontError` variants
 

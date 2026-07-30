@@ -13,6 +13,7 @@
 /// - searchRange u16 = 0
 /// - entrySelector u16 = 0
 /// - rangeShift u16 = 0
+#[cfg(feature = "woff1")]
 fn minimal_sfnt() -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&[0x00u8, 0x01, 0x00, 0x00]); // sfVersion: TrueType
@@ -27,6 +28,7 @@ fn minimal_sfnt() -> Vec<u8> {
 ///
 /// Returns the raw bytes of the first readable TTF found, or `None` if the
 /// host system has no TTF fonts in the usual locations.
+#[cfg(feature = "woff1")]
 fn find_ttf_on_system() -> Option<Vec<u8>> {
     let dirs = [
         "/System/Library/Fonts",

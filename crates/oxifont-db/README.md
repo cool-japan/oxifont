@@ -11,14 +11,14 @@ The store is a flat `Vec<FaceInfo>` with secondary case-folded family-name and P
 
 ```toml
 [dependencies]
-oxifont-db = "0.1.0"
+oxifont-db = "0.2.1"
 ```
 
 With the opt-in disk cache:
 
 ```toml
 [dependencies]
-oxifont-db = { version = "0.1.0", features = ["cache"] }
+oxifont-db = { version = "0.2.1", features = ["cache"] }
 ```
 
 ## Quick Start
@@ -77,6 +77,8 @@ The in-memory indexed store.
 | `faces_by_family(&self, name) -> Vec<&FaceInfo>` | Faces for a family (case-insensitive) |
 | `face_by_id(&self, id) -> Option<&FaceInfo>` | Look up by numeric ID |
 | `find_by_postscript_name(&self, name) -> Option<&FaceInfo>` | Exact, case-sensitive PostScript-name lookup |
+| `locale_families_for(&self, bcp47) -> Vec<String>` | Distinct locale-specific family names for a BCP-47 tag, with subtag-stripping fallback (`ja-JP-x-foo` → `ja-JP` → `ja`) |
+| `faces_for_script(&self, tag: &[u8; 4]) -> Vec<&FaceInfo>` | Faces approximately covering an OpenType script tag (e.g. `b"arab"`) via OS/2 range bits; faces with unknown ranges are included conservatively |
 | `stats(&self) -> DbStats` | Aggregate statistics |
 
 Cache methods (require the `cache` feature): `save_cache(&Path)` / `load_cache(&Path)` (JSON), and `save_cache_binary(&Path)` / `load_cache_binary(&Path)` (Pure-Rust `oxicode` binary, magic `OXDB`). Only `Source::File` faces are persisted.

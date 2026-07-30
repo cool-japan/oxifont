@@ -11,14 +11,14 @@ The subsetter handles both TrueType (`glyf`/`loca`) and CFF/CFF2 outline formats
 
 ```toml
 [dependencies]
-oxifont-subset = "0.1.0"
+oxifont-subset = "0.2.1"
 ```
 
 With parallel table rewriting:
 
 ```toml
 [dependencies]
-oxifont-subset = { version = "0.1.0", features = ["parallel"] }
+oxifont-subset = { version = "0.2.1", features = ["parallel"] }
 ```
 
 ## Quick Start
@@ -127,6 +127,25 @@ Each module exposes the rewriter used by the pipeline; they are public so advanc
 | `gvar` | `rewrite_gvar` | Per-glyph variation data rewrite |
 | `varfont` | `rewrite_hvar_vvar` | HVAR / VVAR delta-set index map rewrite |
 
+### `pdf_subset` module — streaming accumulator for PDF/CID pipelines
+
+`PdfFontSubsetter` accumulates codepoints and/or raw GIDs across multiple text-placement calls (e.g. while composing PDF pages) and produces one minimal subset on `finalize`, so a multi-page document is subset once instead of per page. It is not `Sync`; use `.merge()` to combine per-thread accumulators before finalizing.
+
+| Method | Description |
+|--------|-------------|
+| `PdfFontSubsetter::new(font_data, opts)` | New accumulator with explicit `SubsetOptions` |
+| `PdfFontSubsetter::for_pdf(font_data)` | Preset matching `subset_font_for_pdf` |
+| `PdfFontSubsetter::for_web(font_data)` | Preset matching `subset_font_for_web` |
+| `.add_codepoint(char)` / `.add_text(&str)` | Accumulate Unicode codepoints (resolved via `cmap` at `finalize`) |
+| `.add_gid(u16)` / `.add_gids(&[u16])` | Accumulate raw GIDs directly, bypassing `cmap` (PDF Type3/CID workflows) |
+| `.codepoint_count()` / `.gid_count()` / `.is_empty()` | Inspect accumulated state |
+| `.codepoints() -> &BTreeSet<char>` / `.raw_gids() -> &BTreeSet<u16>` | Borrow the accumulated sets |
+| `.merge(&mut other)` | Fold another accumulator's codepoints/GIDs into `self`, resetting `other` |
+| `.finalize() -> Result<(Vec<u8>, SubsetStats), SubsetError>` | Resolve accumulated state through the standard subsetting pipeline |
+| `.finalize_into_result() -> Result<PdfSubsetResult, SubsetError>` | `finalize`, wrapped into a `{ bytes, stats }` struct |
+| `.into_finalized() -> Result<(Vec<u8>, Vec<u8>, SubsetStats), SubsetError>` | Consumes `self`; returns `(original_font_data, subset_bytes, stats)` |
+| `.reset()` | Clear accumulated codepoints/GIDs, keeping `font_data`/`opts` for reuse |
+
 ## Feature Flags
 
 | Feature | Default | Description |
@@ -139,7 +158,7 @@ Each module exposes the rewriter used by the pipeline; they are public so advanc
 
 | `SubsetError` variant | Cause |
 |-----------------------|-------|
-| `InvalidFont(String)` | Structurally invalid font data (truncated header, malformed sub-table, …) |
+| `InvalidFont(String)` | Structurally invalid font data (truncated header, malformed sub-table, …), or a requested subset whose format-4 `cmap` sub-table would exceed the ~8189-segment addressable size |
 | `TableMissing([u8; 4])` | A required table (`cmap`, `glyf`, `loca`, `head`, `hhea`, `hmtx`, …) is absent |
 | `Io(std::io::Error)` | I/O error (file paths / tests); implements `From<std::io::Error>` |
 

@@ -1,7 +1,7 @@
 # oxifont-adapter-pure TODO
 
 ## Status
-Composes `oxifont-discovery` and `oxifont-parser` into a `FontCatalog` implementation requiring no native libraries. Provides `FontDatabase` with `system()`, `scan()`, and `from_faces()` constructors plus `load_face()`. CSS Fonts Level 4 matching via `find_css()`. Generic family resolution (sans-serif/serif/monospace/cursive/fantasy). ~290 SLOC. Full CSS §4.5 matching + test coverage.
+Composes `oxifont-discovery` and `oxifont-parser` into a `FontCatalog` implementation requiring no native libraries. Provides `FontDatabase` with `system()`, `scan()`, and `from_faces()` constructors plus `load_face()`. CSS Fonts Level 4 matching via `find_css()`. Generic family resolution (sans-serif/serif/monospace/cursive/fantasy). 636 SLOC (`src/lib.rs`). Full CSS §4.5 matching + test coverage (62 tests passing).
 
 ## Core Implementation
 - [x] Add font fallback chain support: `find_with_fallback(families, base_query, text) -> Option<&FaceInfo>` that tries multiple families until a face is found (~60 SLOC). `text` is accepted but cmap coverage check is deferred (FaceInfo has no unicode_ranges; per-file loading is too expensive in hot paths).

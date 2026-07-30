@@ -7,6 +7,35 @@ OxiFont adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.2.1] - 2026-07-30
+
+### Added
+
+- **`oxifont-hinting`** (new crate): a Pure Rust TrueType bytecode hinting interpreter (grid-fitting VM). `HintingEngine::new` loads a font's hinting tables from a `SfntTableMap` and runs `fpgm` once; `set_ppem` scales the CVT and runs `prep`; `hint_glyph` grid-fits a single glyph to 26.6 fixed-point coordinates, and `HintedGlyph::to_outline()` decomposes the result into `oxifont_core::GlyphOutline` path commands. The VM never panics on malformed or hostile bytecode — every stack, storage, CVT, point, and jump access is bounds-checked and mapped to a typed `HintingError`, with bounded instruction count, call depth, and loop counts so infinite loops and deep recursion terminate with an error instead of hanging or overflowing the native stack. Not yet re-exported from the `oxifont` facade crate; depend on `oxifont-hinting` directly.
+- `oxifont-bundled`: build-time CJK font resolution. Enabling `bundled-noto-cjk-{jp,kr,sc,tc}` now compiles a `noto_sans_<lang>_regular()` accessor that stages a real, developer-supplied TTF at build time — via the `OXIFONT_NOTO_CJK_<LANG>` environment variable (e.g. `OXIFONT_NOTO_CJK_JP=/path/to/NotoSansJP-Regular.ttf`) or an in-tree `fonts/cjk-<lang>/NotoSans<LANG>-Regular.ttf` file — validated as a genuine SFNT (`build.rs` panics on a bad magic instead of bundling garbage).
+
+### Changed
+
+- **Breaking**: `oxifont-bundled` CJK fonts are no longer `pub static NOTO_SANS_{JP,KR,SC,TC}_REGULAR: &[u8]` zero-byte placeholders. Each is now a `noto_sans_<lang>_regular() -> Result<&'static [u8], oxifont_core::FontError>` function, returning `Err(FontError::NotFound)` when no font was supplied at build time instead of an empty slice. `BundledFontProvider` now omits a CJK entry entirely rather than ever listing empty or fabricated bytes.
+- `oxifont-subset::cmap`: `build_format4` now returns `Result<Vec<u8>, SubsetError>` instead of `Vec<u8>`. Header field arithmetic (segCount, searchRange, entrySelector, rangeShift) is computed in `usize`/`u32` and range-checked before narrowing to `u16`, rejecting subsets whose format-4 cmap would exceed the ~8189-segment addressable limit with a typed `SubsetError::InvalidFont` instead of risking silent `u16` overflow.
+- `oxiarc-deflate` / `oxiarc-brotli` updated from 0.3.3 to 0.4.0; `quick-xml` 0.40.1 → 0.41.0; `memmap2` 0.9.10 → 0.9.11.
+- `oxicode` updated from 0.2.4 to 0.2.5.
+
+### Fixed
+
+- **WOFF2 `Read255UShort` decoding** (`oxifont-webfont`, `woff2/glyf.rs` and `woff2/header.rs`): the `oneMoreByteCode2` branch (control byte `254`) incorrectly read a 2-byte big-endian `u16` + 506 (3 bytes total); per WOFF2 §5.1 it must read a single byte + 506 (2 bytes total). A WOFF2 font produced by an encoder that emits the `254` form would misparse and desync the byte stream. This crate's own encoder always prefers the `255` form for that value range, so self-encoded round-trips were unaffected.
+- `oxifont-subset::cmap::build_format4`: large-but-valid subsets with segment counts near the `u16` boundary previously risked silent overflow in the `search_range`/`length` computation (via `next_power_of_two` on `u16`), which could emit a corrupt cmap table in release builds; now validated and rejected with a typed error before any narrowing occurs.
+
+### Removed
+
+- **`oxifont-webfont`: `benches/woff2_compare.rs`** and its `woff2-patched`, `ttf2woff2`, and `bytes` dev-dependencies. Both reference implementations depend non-optionally on the `brotli` crate, which `deny.toml` bans in favour of `oxiarc-brotli`; this dev-only path was the sole reason `cargo deny check bans` failed. Our own decode/encode paths remain covered by `benches/woff2_decode.rs` and `benches/woff2_streaming.rs`.
+
+### Security
+
+- **`oxifont-webfont`**: `reconstruct_glyf_loca` now rejects a transformed WOFF2 glyf block whose `nPointsStream` advertises more points than the accompanying `flagStream` can contain, checked *before* reserving any point-sized buffers — closing a potential multi-gigabyte-allocation denial-of-service from a crafted WOFF2 font.
+
+---
+
 ## [0.2.0] - 2026-06-22
 
 ### Added
@@ -28,6 +57,7 @@ OxiFont adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Pure Rust Policy v2 L1 compliance**: `yeslogic-fontconfig-sys` (a C FFI crate) is no longer reachable from the `oxifont` facade crate under any feature combination; it remains available only through `oxifont-adapter-native` where FFI is intentional and feature-gated.
 
+[0.2.1]: https://github.com/cool-japan/oxifont/releases/tag/v0.2.1
 [0.2.0]: https://github.com/cool-japan/oxifont/releases/tag/v0.2.0
 
 ---

@@ -1155,6 +1155,17 @@ pub fn reconstruct_glyf_loca(transformed: &[u8]) -> Result<ReconstructedGlyfLoca
         }
         let total_points = total_points as usize;
 
+        // Guard against a hostile nPointsStream advertising far more points than the
+        // flagStream can possibly contain. The flagStream stores exactly one byte per
+        // point, so `total_points` can never exceed its remaining length. Validate this
+        // *before* reserving any point-sized buffers, otherwise a crafted font could
+        // request a multi-gigabyte allocation (DoS) from just a few input bytes.
+        if total_points > flag_cur.remaining() {
+            return Err(WebFontError::MalformedGlyfTransform(
+                "nPoints exceeds available flagStream length".to_string(),
+            ));
+        }
+
         // Build endPtsOfContours.
         let mut end_pts = Vec::with_capacity(n_contours_u);
         let mut running_end: u16 = 0;
@@ -1353,32 +1364,35 @@ fn read_composite_glyph(
 
 /// Read a `255UInt16` encoded value from the cursor.
 ///
-/// WOFF2 §5.1: This encoding uses 1, 2, or 3 bytes.
-/// - If first byte < 253: value = first byte (0..=252).
-/// - If first byte == 255: value = second_byte * wordCount + 253, then recurse? No:
-///   255 → value = next_uint8 + 253 (single-byte extension, values 253..=508 → wait that's wrong).
-///   Actually per spec:
-///   - 253 → two-byte value (big-endian uint16).
-///   - 254 → two-byte value + 506.
-///   - 255 → next_uint8 + 253.
+/// WOFF2 §5.1 (`Read255UShort`): this encoding uses 1, 2, or 3 bytes.
+/// Read one control byte `code`, then:
+/// - `code == 253` (wordCode): read two more bytes, big-endian `uint16`.
+/// - `code == 255` (oneMoreByteCode1): read one more byte, value = byte + 253.
+/// - `code == 254` (oneMoreByteCode2): read one more byte, value = byte + 506.
+/// - otherwise: value = `code` (0..=252).
 fn read_255_uint16(cur: &mut Cursor<'_>) -> Result<u16, WebFontError> {
-    let b0 = cur.read_u8()?;
-    match b0 {
-        253 => {
-            // 2-byte value.
+    const WORD_CODE: u8 = 253;
+    const ONE_MORE_BYTE_CODE1: u8 = 255;
+    const ONE_MORE_BYTE_CODE2: u8 = 254;
+    const LOWEST_U_CODE: u16 = 253;
+
+    let code = cur.read_u8()?;
+    match code {
+        WORD_CODE => {
+            // Two-byte big-endian value.
             cur.read_u16_be()
         }
-        254 => {
-            // 2-byte value + 506.
-            let v = cur.read_u16_be()?;
-            Ok(v.wrapping_add(506))
-        }
-        255 => {
-            // 1-byte value + 253.
+        ONE_MORE_BYTE_CODE1 => {
+            // Single byte + 253.
             let b1 = cur.read_u8()?;
-            Ok((b1 as u16).wrapping_add(253))
+            Ok(b1 as u16 + LOWEST_U_CODE)
         }
-        _ => Ok(b0 as u16),
+        ONE_MORE_BYTE_CODE2 => {
+            // Single byte + 506.
+            let b1 = cur.read_u8()?;
+            Ok(b1 as u16 + LOWEST_U_CODE * 2)
+        }
+        _ => Ok(code as u16),
     }
 }
 
@@ -1490,6 +1504,71 @@ mod tests {
         let mut cur = Cursor::new(&data);
         let v = read_255_uint16(&mut cur).expect("should decode 263");
         assert_eq!(v, 263);
+    }
+
+    #[test]
+    fn read_255_uint16_all_branches_spec() {
+        // Exercise all four Read255UShort branches (WOFF2 §5.1) from one contiguous
+        // stream and confirm both the decoded values and that the sub-stream stays in
+        // sync (no extra byte consumed for the 254 case).
+        //   [ 100 ]             -> 100        (control < 253, 1 byte)
+        //   [ 253, 0x01, 0x2C ] -> 300        (wordCode, big-endian u16, 3 bytes)
+        //   [ 254, 44 ]         -> 44 + 506   (oneMoreByteCode2, 2 bytes)
+        //   [ 255, 44 ]         -> 44 + 253   (oneMoreByteCode1, 2 bytes)
+        let data = [100u8, 253, 0x01, 0x2C, 254, 44, 255, 44];
+        let mut cur = Cursor::new(&data);
+        assert_eq!(read_255_uint16(&mut cur).expect("plain"), 100);
+        assert_eq!(read_255_uint16(&mut cur).expect("word"), 300);
+        assert_eq!(read_255_uint16(&mut cur).expect("+506"), 44 + 506);
+        assert_eq!(read_255_uint16(&mut cur).expect("+253"), 44 + 253);
+        // The whole stream must be consumed exactly — a 254 that wrongly read a word
+        // would have desynced and left the cursor mid-stream.
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn reconstruct_rejects_oversized_npoints() {
+        // A hostile transformed glyf block advertising a colossal point count via the
+        // nPointsStream must be rejected *before* any point-sized buffer is reserved,
+        // rather than triggering a multi-gigabyte allocation.
+        const N_CONTOURS: i16 = 5000;
+
+        // nPointsStream: N_CONTOURS entries, each encoded as wordCode 65535
+        // -> total_points = 5000 * 65535 ≈ 327M, which vastly exceeds the 4-byte
+        // flagStream below.
+        let mut n_points_stream: Vec<u8> = Vec::with_capacity(N_CONTOURS as usize * 3);
+        for _ in 0..N_CONTOURS {
+            n_points_stream.push(253);
+            n_points_stream.extend_from_slice(&0xFFFF_u16.to_be_bytes());
+        }
+        let n_contour_stream = N_CONTOURS.to_be_bytes().to_vec();
+        let flag_stream = vec![0u8; 4];
+
+        let n_contour_size = n_contour_stream.len() as u32;
+        let n_points_size = n_points_stream.len() as u32;
+        let flag_size = flag_stream.len() as u32;
+
+        let mut block: Vec<u8> = Vec::new();
+        block.extend_from_slice(&0x0000_u16.to_be_bytes()); // version (accepted)
+        block.extend_from_slice(&0x0000_u16.to_be_bytes()); // option_flags
+        block.extend_from_slice(&1u16.to_be_bytes()); // num_glyphs = 1
+        block.extend_from_slice(&1u16.to_be_bytes()); // index_format = long
+        block.extend_from_slice(&n_contour_size.to_be_bytes());
+        block.extend_from_slice(&n_points_size.to_be_bytes());
+        block.extend_from_slice(&flag_size.to_be_bytes());
+        block.extend_from_slice(&0u32.to_be_bytes()); // glyph_stream_size
+        block.extend_from_slice(&0u32.to_be_bytes()); // composite_stream_size
+        block.extend_from_slice(&0u32.to_be_bytes()); // bbox_stream_size
+        block.extend_from_slice(&0u32.to_be_bytes()); // instruction_stream_size
+        block.extend_from_slice(&n_contour_stream);
+        block.extend_from_slice(&n_points_stream);
+        block.extend_from_slice(&flag_stream);
+
+        match reconstruct_glyf_loca(&block) {
+            Err(WebFontError::MalformedGlyfTransform(_)) => {}
+            Err(other) => panic!("expected MalformedGlyfTransform, got {other:?}"),
+            Ok(_) => panic!("oversized nPoints must be rejected, not reconstructed"),
+        }
     }
 
     #[test]

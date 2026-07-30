@@ -7,18 +7,20 @@
 
 The crate is **100% Pure Rust**: compression is provided by the COOLJAPAN [`oxiarc-deflate`](https://crates.io/crates/oxiarc-deflate) (zlib/DEFLATE) and [`oxiarc-brotli`](https://crates.io/crates/oxiarc-brotli) crates — no C `zlib`, `brotli`, or `woff2` libraries are linked. The codec forbids `unsafe` code (`#![forbid(unsafe_code)]`).
 
+Decoding is defensive against malformed or hostile WOFF2 input: stream-length fields — such as a transformed glyf block's per-contour point counts — are validated against their companion stream's actual remaining bounds *before* any point-sized buffer is allocated, closing off a large-allocation denial-of-service from a crafted font.
+
 ## Installation
 
 ```toml
 [dependencies]
 # WOFF2 only (brotli)
-oxifont-webfont = { version = "0.1.0", features = ["woff2"] }
+oxifont-webfont = { version = "0.2.1", features = ["woff2"] }
 
 # WOFF1 only (zlib)
-oxifont-webfont = { version = "0.1.0", features = ["woff1"] }
+oxifont-webfont = { version = "0.2.1", features = ["woff1"] }
 
 # Both
-oxifont-webfont = { version = "0.1.0", features = ["woff1", "woff2"] }
+oxifont-webfont = { version = "0.2.1", features = ["woff1", "woff2"] }
 ```
 
 Without any feature flag the crate still compiles and exposes the format-detection

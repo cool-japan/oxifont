@@ -11,7 +11,7 @@ Font bytes are held in an `Arc<[u8]>`, making `ParsedFace` cheaply `Clone`, `Sen
 
 ```toml
 [dependencies]
-oxifont-parser = "0.1.0"
+oxifont-parser = "0.2.1"
 ```
 
 ## Quick Start
@@ -100,6 +100,18 @@ assert!(face.is_variable());
 | `variation_coordinates(&self, settings) -> Option<Self>` | Clone with recorded `(tag, value)` axis settings; `None` if not variable |
 | `variation_settings(&self) -> &[([u8;4], f32)]` | The applied variation settings, if any |
 | `preload(self) -> Self` | No-op today; reserved for a future glyph-level cache |
+| `outline_with_bbox(&self, gid) -> Option<GlyphOutlineData>` | Path commands + ink bounding box + advance width + LSB in one call — enough to rasterize without fontdue or a third-party hinting engine |
+
+### `GlyphOutlineData` struct
+
+Returned by `outline_with_bbox`. All coordinates are in font design units.
+
+| Field | Type | Description |
+|-------|------|--------------|
+| `commands` | `Vec<GlyphOutline>` | Ordered path commands for the glyph's contours |
+| `x_min`, `y_min`, `x_max`, `y_max` | `i16` | Ink bounding box, as reported by the font's own `glyf`/`CFF` table |
+| `advance_width` | `Option<u16>` | Horizontal advance from `hmtx`; `None` if `gid` is out of range |
+| `lsb` | `Option<i16>` | Left-side bearing from `hmtx`, if available |
 
 ### `FontFace` implementation
 

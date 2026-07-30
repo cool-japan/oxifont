@@ -40,10 +40,10 @@ pub fn encode_uint_base128(out: &mut Vec<u8>, value: u32) {
 ///
 /// This is the inverse of `read_255_uint16` in `woff2/glyf.rs`.
 ///
-/// Decoder reference (from glyf.rs):
+/// Decoder reference (from glyf.rs, WOFF2 §5.1 `Read255UShort`):
 /// - b0 < 253: value = b0 (1 byte total)
 /// - b0 == 253: value = next_u16_be (3 bytes total, range 0..65535)
-/// - b0 == 254: value = next_u16_be + 506 (3 bytes total, range 506..66041)
+/// - b0 == 254: value = next_u8 + 506 (2 bytes total, range 506..761)
 /// - b0 == 255: value = next_u8 + 253 (2 bytes total, range 253..508)
 ///
 /// Encoding scheme (using the most compact representation):
@@ -192,19 +192,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn decode_255_u16_test_254_lead() {
+        // `encode_255_u16` never emits a 254-lead byte (that encoding is used by
+        // some WOFF2 encoders as an alternative 2-byte form for 506..=761, but
+        // this encoder always prefers the 255-lead form for that range).
+        // `decode_255_u16_test` must still decode it correctly per spec, since
+        // it stands in for the real `read_255_uint16` decoder against inputs
+        // produced by *other* encoders. 254 followed by a single byte `b1`
+        // decodes to `b1 + 506`.
+        assert_eq!(decode_255_u16_test(&[254, 0]), 506);
+        assert_eq!(decode_255_u16_test(&[254, 255]), 761);
+        assert_eq!(decode_255_u16_test(&[254, 42]), 548);
+    }
+
     /// Inline re-implementation of `read_255_uint16` logic for test verification.
     ///
     /// Matches `woff2/glyf.rs:read_255_uint16`.
     ///
     /// - `253`: next 2 bytes are a big-endian uint16 (value as-is).
-    /// - `254`: next 2 bytes big-endian uint16 + 506.
+    /// - `254`: next 1 byte + 506.
     /// - `255`: next 1 byte + 253.
     /// - else: the byte value itself.
     fn decode_255_u16_test(data: &[u8]) -> u16 {
         let b0 = data[0];
         match b0 {
             253 => u16::from_be_bytes([data[1], data[2]]),
-            254 => u16::from_be_bytes([data[1], data[2]]).wrapping_add(506),
+            254 => (data[1] as u16).wrapping_add(506),
             255 => (data[1] as u16).wrapping_add(253),
             _ => b0 as u16,
         }

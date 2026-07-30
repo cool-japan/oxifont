@@ -11,11 +11,19 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
-//! | `bundled-noto` | Noto Sans Regular/Bold and Noto Serif Regular (Latin/Greek/Cyrillic) |
-//! | `bundled-noto-cjk-jp` | Noto Sans JP Regular (requires `bundled-noto`) |
-//! | `bundled-noto-cjk-kr` | Noto Sans KR Regular (requires `bundled-noto`) |
-//! | `bundled-noto-cjk-sc` | Noto Sans SC Regular (requires `bundled-noto`) |
-//! | `bundled-noto-cjk-tc` | Noto Sans TC Regular (requires `bundled-noto`) |
+//! | `bundled-noto` | Noto Sans Regular/Bold/Italic, Noto Serif Regular, Noto Sans Mono (Latin/Greek/Cyrillic) |
+//! | `bundled-noto-cjk-jp` | Accessor for Noto Sans JP Regular — font must be supplied at build time |
+//! | `bundled-noto-cjk-kr` | Accessor for Noto Sans KR Regular — font must be supplied at build time |
+//! | `bundled-noto-cjk-sc` | Accessor for Noto Sans SC Regular — font must be supplied at build time |
+//! | `bundled-noto-cjk-tc` | Accessor for Noto Sans TC Regular — font must be supplied at build time |
+//!
+//! The Noto CJK faces (~16 MB each) are **not** vendored in this crate. Enabling
+//! a `bundled-noto-cjk-*` feature exposes a `noto_sans_<lang>_regular()` accessor
+//! that returns the real font bytes when one was supplied at build time (via the
+//! `OXIFONT_NOTO_CJK_<LANG>` environment variable or an in-tree
+//! `fonts/cjk-<lang>/` file) and a typed [`oxifont_core::FontError::NotFound`]
+//! otherwise. It never returns empty or fabricated bytes. See the crate README
+//! for the full recipe and CJK licensing.
 //!
 //! # Quick start
 //! ```no_run
@@ -75,50 +83,109 @@ pub static NOTO_SANS_MONO_REGULAR: &[u8] = include_bytes!("../fonts/NotoSansMono
 
 // ── CJK sub-features ─────────────────────────────────────────────────────────
 //
-// NOTE: These placeholder files are intentionally zero-byte stubs.
-// To use CJK fonts, place the real NotoSansJP/KR/SC/TC Regular TTF files at
-// the paths indicated below and rebuild with the corresponding feature flag.
+// Noto CJK faces (~16 MB each) are far too large to vendor into this repository,
+// so they are NOT shipped. Enabling a `bundled-noto-cjk-<lang>` feature compiles
+// an accessor that returns the font bytes *only* when a developer has supplied a
+// real TTF at build time (via the `OXIFONT_NOTO_CJK_<LANG>` environment variable
+// or an in-tree `fonts/cjk-<lang>/NotoSans<LANG>-Regular.ttf` file — see build.rs).
+// When no font is supplied the accessor returns `FontError::NotFound`; it NEVER
+// hands out empty or fabricated bytes. See the crate README for the full recipe
+// and CJK licensing (SIL OFL 1.1) attribution.
+//
 // Real fonts are available from: https://github.com/notofonts/noto-cjk/releases
 
-/// Raw bytes of Noto Sans JP Regular (CJK Unified Ideographs — Japanese).
+/// Accessor for Noto Sans JP Regular (CJK Unified Ideographs — Japanese).
 ///
-/// **Placeholder**: the bundled file is empty by default.
-/// To enable, place `NotoSansJP-Regular.ttf` in `crates/oxifont-bundled/fonts/cjk-jp/`
-/// and rebuild with `--features bundled-noto-cjk-jp`.
+/// Returns the developer-supplied font bytes when one was staged at build time,
+/// otherwise [`FontError::NotFound`](oxifont_core::FontError::NotFound). The
+/// returned bytes are always a valid SFNT (validated by `build.rs`); an empty or
+/// fake slice is never produced.
 ///
-/// Licensed under the SIL Open Font License 1.1.
+/// To bundle a real font, set `OXIFONT_NOTO_CJK_JP=/path/to/NotoSansJP-Regular.ttf`
+/// (or drop the file at `crates/oxifont-bundled/fonts/cjk-jp/NotoSansJP-Regular.ttf`)
+/// and build with `--features bundled-noto-cjk-jp`.
+///
+/// The bundled font, when supplied, is licensed under the SIL Open Font License 1.1.
 #[cfg(feature = "bundled-noto-cjk-jp")]
-pub static NOTO_SANS_JP_REGULAR: &[u8] = include_bytes!("../fonts/cjk-jp/NotoSansJP-Regular.ttf");
+pub fn noto_sans_jp_regular() -> Result<&'static [u8], oxifont_core::FontError> {
+    #[cfg(oxifont_cjk_jp_bundled)]
+    {
+        Ok(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/NotoSansJP-Regular.ttf"
+        )))
+    }
+    #[cfg(not(oxifont_cjk_jp_bundled))]
+    {
+        Err(oxifont_core::FontError::NotFound)
+    }
+}
 
-/// Raw bytes of Noto Sans KR Regular (CJK Unified Ideographs — Korean).
+/// Accessor for Noto Sans KR Regular (CJK Unified Ideographs — Korean).
 ///
-/// **Placeholder**: the bundled file is empty by default.
-/// To enable, place `NotoSansKR-Regular.ttf` in `crates/oxifont-bundled/fonts/cjk-kr/`
-/// and rebuild with `--features bundled-noto-cjk-kr`.
+/// Returns the developer-supplied font bytes when one was staged at build time,
+/// otherwise [`FontError::NotFound`](oxifont_core::FontError::NotFound). See
+/// [`noto_sans_jp_regular`] for the supply recipe (env var `OXIFONT_NOTO_CJK_KR`).
 ///
-/// Licensed under the SIL Open Font License 1.1.
+/// The bundled font, when supplied, is licensed under the SIL Open Font License 1.1.
 #[cfg(feature = "bundled-noto-cjk-kr")]
-pub static NOTO_SANS_KR_REGULAR: &[u8] = include_bytes!("../fonts/cjk-kr/NotoSansKR-Regular.ttf");
+pub fn noto_sans_kr_regular() -> Result<&'static [u8], oxifont_core::FontError> {
+    #[cfg(oxifont_cjk_kr_bundled)]
+    {
+        Ok(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/NotoSansKR-Regular.ttf"
+        )))
+    }
+    #[cfg(not(oxifont_cjk_kr_bundled))]
+    {
+        Err(oxifont_core::FontError::NotFound)
+    }
+}
 
-/// Raw bytes of Noto Sans SC Regular (CJK Unified Ideographs — Simplified Chinese).
+/// Accessor for Noto Sans SC Regular (CJK Unified Ideographs — Simplified Chinese).
 ///
-/// **Placeholder**: the bundled file is empty by default.
-/// To enable, place `NotoSansSC-Regular.ttf` in `crates/oxifont-bundled/fonts/cjk-sc/`
-/// and rebuild with `--features bundled-noto-cjk-sc`.
+/// Returns the developer-supplied font bytes when one was staged at build time,
+/// otherwise [`FontError::NotFound`](oxifont_core::FontError::NotFound). See
+/// [`noto_sans_jp_regular`] for the supply recipe (env var `OXIFONT_NOTO_CJK_SC`).
 ///
-/// Licensed under the SIL Open Font License 1.1.
+/// The bundled font, when supplied, is licensed under the SIL Open Font License 1.1.
 #[cfg(feature = "bundled-noto-cjk-sc")]
-pub static NOTO_SANS_SC_REGULAR: &[u8] = include_bytes!("../fonts/cjk-sc/NotoSansSC-Regular.ttf");
+pub fn noto_sans_sc_regular() -> Result<&'static [u8], oxifont_core::FontError> {
+    #[cfg(oxifont_cjk_sc_bundled)]
+    {
+        Ok(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/NotoSansSC-Regular.ttf"
+        )))
+    }
+    #[cfg(not(oxifont_cjk_sc_bundled))]
+    {
+        Err(oxifont_core::FontError::NotFound)
+    }
+}
 
-/// Raw bytes of Noto Sans TC Regular (CJK Unified Ideographs — Traditional Chinese).
+/// Accessor for Noto Sans TC Regular (CJK Unified Ideographs — Traditional Chinese).
 ///
-/// **Placeholder**: the bundled file is empty by default.
-/// To enable, place `NotoSansTC-Regular.ttf` in `crates/oxifont-bundled/fonts/cjk-tc/`
-/// and rebuild with `--features bundled-noto-cjk-tc`.
+/// Returns the developer-supplied font bytes when one was staged at build time,
+/// otherwise [`FontError::NotFound`](oxifont_core::FontError::NotFound). See
+/// [`noto_sans_jp_regular`] for the supply recipe (env var `OXIFONT_NOTO_CJK_TC`).
 ///
-/// Licensed under the SIL Open Font License 1.1.
+/// The bundled font, when supplied, is licensed under the SIL Open Font License 1.1.
 #[cfg(feature = "bundled-noto-cjk-tc")]
-pub static NOTO_SANS_TC_REGULAR: &[u8] = include_bytes!("../fonts/cjk-tc/NotoSansTC-Regular.ttf");
+pub fn noto_sans_tc_regular() -> Result<&'static [u8], oxifont_core::FontError> {
+    #[cfg(oxifont_cjk_tc_bundled)]
+    {
+        Ok(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/NotoSansTC-Regular.ttf"
+        )))
+    }
+    #[cfg(not(oxifont_cjk_tc_bundled))]
+    {
+        Err(oxifont_core::FontError::NotFound)
+    }
+}
 
 // ── BundledFont / BundledCatalog ──────────────────────────────────────────────
 

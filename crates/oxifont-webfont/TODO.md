@@ -1,7 +1,9 @@
 # oxifont-webfont TODO
 
 ## Status
-Pure Rust WOFF1 and WOFF2 decoder. WOFF1: zlib decompression via `oxiarc-deflate`, header/directory parsing, checksum verification. WOFF2: brotli decompression via `oxiarc-brotli`, transformed glyf/loca/hmtx reconstruction (Felzenszwalb triplet decoding, 255UInt16, composite glyph handling, bbox bitmap, instruction streams), SFNT assembly with checkSumAdjustment. 7 source files, ~1077 SLOC across woff1.rs, woff2/mod.rs, woff2/header.rs, woff2/glyf.rs, woff2/hmtx.rs, sfnt.rs, error.rs. Decoders are feature-gated. Missing WOFF encoding and collection support.
+Pure Rust WOFF1 and WOFF2 encode + decode codec. WOFF1: zlib via `oxiarc-deflate`, header/directory parsing, checksum verification, encode and decode. WOFF2: brotli via `oxiarc-brotli`, full decode (transformed glyf/loca/hmtx reconstruction, triplet decoding, 255UInt16, composite, bbox bitmap, TTC) and full encode (forward glyf/loca transforms, varint serialization, UIntBase128/255UInt16). `detect.rs` for autodetection. `sfnt.rs` for table assembly. 9 source files, ~1800 SLOC. Full encode+decode pipeline for both formats. 45 public items, 0 stubs.
+
+**0.2.1** (2026-07-30): fixed a `Read255UShort` (255UInt16) spec-compliance bug in the control-byte-`254` branch (`woff2/glyf.rs`, `woff2/header.rs`) — it read a 2-byte big-endian value + 506 (3 bytes total) instead of a single byte + 506 (2 bytes total) per WOFF2 §5.1 — and hardened `reconstruct_glyf_loca` to reject a transformed glyf block whose `nPointsStream` claims more points than `flagStream` can hold, checked before any point-sized buffer is allocated (closes a large-allocation DoS). Also removed `benches/woff2_compare.rs` and its `woff2-patched`/`ttf2woff2`/`bytes` dev-dependencies (banned-`brotli`-dependency cleanup; see Performance section below). 215 tests passing, 1 skipped, 0 failed, with `--all-features`.
 
 ## Core Implementation
 - [x] Implement WOFF1 encoder: compress SFNT tables with zlib, write WOFF1 header/directory (~150 SLOC) (planned 2026-05-25)
@@ -97,7 +99,7 @@ Pure Rust WOFF1 and WOFF2 decoder. WOFF1: zlib decompression via `oxiarc-deflate
   - WOFF1/WOFF2 compressed paths: blocked on upstream oxiarc-deflate/oxiarc-brotli not exposing a `decompress_with_capacity(data, hint)` API; documented in code.
 - [x] Avoid intermediate Vec allocations during table transform reconstruction — `extract_and_transform_tables_cow` added (2026-06-03): non-transformed tables returned as `Cow::Borrowed` from decompressed buffer; `build_sfnt_cow` in sfnt.rs accepts `Cow<[u8]>` table list. Hot decode path (decode_with_metadata) uses cow variant, saving one Vec::clone per non-transformed table.
 - [x] Stream brotli decompression directly into table slicing (subsumed by streaming decoder above — will be marked done as part of that implementation)
-- [x] Benchmark WOFF2 decode against woff2-rs and fontkit for performance comparison — `benches/woff2_compare.rs` compares oxifont-webfont decode/encode against `woff2-patched` (woff2-rs) and `ttf2woff2`; fontkit is JS-only so not benchmarkable from Rust
+- [x] Benchmark WOFF2 decode against woff2-rs and fontkit for performance comparison — implemented as `benches/woff2_compare.rs`, then **removed** (2026-07-30): both reference crates (`woff2-patched`, `ttf2woff2`) depend non-optionally on the `brotli` crate, which `deny.toml` bans in favour of `oxiarc-brotli`, so the bench alone made `cargo deny check bans` fail. Comparison against external brotli-based implementations is therefore out of scope; `benches/woff2_decode.rs` and `benches/woff2_streaming.rs` cover our own decode paths. (fontkit is JS-only so was never benchmarkable from Rust.)
 
 ## Integration
 - [x] Pipeline with oxifont-subset: subset first, then encode to WOFF2 for web delivery — `oxifont::subset_and_encode_woff2()` in facade crate

@@ -1,7 +1,7 @@
 # oxifont-db TODO
 
 ## Status
-In-memory indexed font database with CSS Fonts Level 4 hybrid query engine. Provides `FontDatabase` with family-name secondary index, `FaceInfo` with PostScript name/stretch/variable axes/locale families, and `Query` builder implementing CSS stretch/style/weight narrowing with fontconfig generic-alias resolution and variable-font `wght` preference. JSON disk cache behind `cache` feature. 6 source files, ~430 SLOC. Production-quality matching but missing several advanced features.
+In-memory indexed font database with CSS Fonts Level 4 hybrid query engine. Provides `FontDatabase` with family-name secondary index, `FaceInfo` with PostScript name/stretch/variable axes/locale families, and `Query` builder implementing CSS stretch/style/weight narrowing with fontconfig generic-alias resolution and variable-font `wght` preference. Binary (`oxicode`) disk cache with a legacy JSON fallback behind the `cache` feature. 8 source files, ~1480 SLOC, 0 stubs. All items below are implemented — this file now tracks shipped work rather than an open backlog. `cargo nextest run -p oxifont-db --all-features`: 139 passed, 1 skipped, 0 failed.
 
 ## Core Implementation
 - [x] Add `ital` axis preference in variable font matching (currently only `wght` axis is checked) (~20 SLOC)

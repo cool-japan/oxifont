@@ -11,7 +11,7 @@ use crate::tables::SubsetError;
 ///
 /// Only BMP (≤ 0xFFFF) codepoints are encoded; higher codepoints must go
 /// through a format-12 sub-table.
-fn build_format4(bmp_map: &BTreeMap<u16, u16>) -> Vec<u8> {
+fn build_format4(bmp_map: &BTreeMap<u16, u16>) -> Result<Vec<u8>, SubsetError> {
     // Build segments: consecutive codepoints with constant (gid - cp) delta.
     // Terminal sentinel segment: (0xFFFF, 0xFFFF, 1, 0) — required by spec.
     struct Seg {
@@ -59,18 +59,37 @@ fn build_format4(bmp_map: &BTreeMap<u16, u16>) -> Vec<u8> {
         delta: 1,
     });
 
-    let seg_count = segments.len() as u16;
-    // searchRange = 2 * 2^floor(log2(segCount))
-    let search_range = 2u16 * seg_count.next_power_of_two() / 2;
-    // next_power_of_two on u16 works correctly for segCount=1 → returns 1
-    // so searchRange = 2 * 1/2 = 1 which is wrong; handle minimum:
-    let search_range = if seg_count == 1 { 2u16 } else { search_range };
-    let entry_selector = ((search_range / 2) as f64).log2().floor() as u16;
-    let range_shift = seg_count * 2 - search_range;
+    // `segments` always contains at least the terminal sentinel, so `seg_count >= 1`.
+    // Perform all header arithmetic in `usize`/`u32` and validate the results fit the
+    // u16 fields of the format-4 encoding *before* narrowing. A subset can exceed the
+    // format-4 addressable size (~8189 segments) and would otherwise overflow u16 and
+    // either panic in debug or emit a corrupt table in release.
+    let seg_count = segments.len();
 
-    // Header (14 bytes) + 4 parallel arrays (each seg_count * 2 bytes) + reservedPad (2).
-    // Total: 14 + 2 + seg_count * 8 bytes.
-    let length = 14u16 + 2 + seg_count * 8;
+    // Header (14 bytes) + reservedPad (2) + 4 parallel arrays (each seg_count * 2 bytes).
+    // Total: 16 + seg_count * 8 bytes. This is the tightest bound: if `length` fits in a
+    // u16 then segCountX2, searchRange, entrySelector and rangeShift all fit as well.
+    let length = seg_count
+        .checked_mul(8)
+        .and_then(|arrays| arrays.checked_add(16))
+        .filter(|&len| len <= u16::MAX as usize)
+        .ok_or_else(|| {
+            SubsetError::InvalidFont(format!(
+                "cmap format 4 subtable too large: {seg_count} segments exceed the u16-addressable size"
+            ))
+        })?;
+
+    // searchRange = 2 * 2^floor(log2(segCount)); entrySelector = floor(log2(segCount));
+    // rangeShift = 2 * segCount - searchRange. Computed in u32 to avoid overflow.
+    let entry_selector = seg_count.ilog2(); // seg_count >= 1
+    let search_range = 2u32 * (1u32 << entry_selector);
+    let range_shift = seg_count as u32 * 2 - search_range;
+
+    let seg_count = seg_count as u16;
+    let search_range = search_range as u16;
+    let entry_selector = entry_selector as u16;
+    let range_shift = range_shift as u16;
+    let length = length as u16;
 
     let mut out = Vec::with_capacity(length as usize);
     out.extend_from_slice(&4u16.to_be_bytes()); // format
@@ -100,7 +119,7 @@ fn build_format4(bmp_map: &BTreeMap<u16, u16>) -> Vec<u8> {
     }
     // No glyphIdArray entries (idRangeOffset all 0).
 
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +212,7 @@ pub fn rewrite_cmap(codepoints_to_new_gid: &BTreeMap<u32, u16>) -> Result<Vec<u8
 
     let has_supplementary = codepoints_to_new_gid.keys().any(|&cp| cp > 0xFFFF);
 
-    let f4_data = build_format4(&bmp_map);
+    let f4_data = build_format4(&bmp_map)?;
 
     // Number of encoding records.
     let mut num_records: u16 = 2; // Windows/Unicode BMP + Unicode/BMP
@@ -250,4 +269,64 @@ pub fn rewrite_cmap(codepoints_to_new_gid: &BTreeMap<u32, u16>) -> Result<Vec<u8
     }
 
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format4_small_header_fields() {
+        // Two isolated codepoints → 2 real segments + 1 sentinel = 3 segments.
+        let mut m: BTreeMap<u16, u16> = BTreeMap::new();
+        m.insert(0x41, 1);
+        m.insert(0x43, 2);
+        let data = build_format4(&m).expect("small format 4 must build");
+        let seg_count_x2 = u16::from_be_bytes([data[6], data[7]]);
+        assert_eq!(seg_count_x2, 3 * 2);
+        // searchRange = 2 * 2^floor(log2(3)) = 2 * 2 = 4.
+        assert_eq!(u16::from_be_bytes([data[8], data[9]]), 4);
+        // entrySelector = floor(log2(3)) = 1.
+        assert_eq!(u16::from_be_bytes([data[10], data[11]]), 1);
+        // rangeShift = 2*3 - 4 = 2.
+        assert_eq!(u16::from_be_bytes([data[12], data[13]]), 2);
+    }
+
+    #[test]
+    fn format4_large_segment_count_no_overflow() {
+        // Build a subset with many isolated segments — a count that would overflow the
+        // former u16 `seg_count * 8` / `next_power_of_two` arithmetic. Isolated even
+        // codepoints (gaps of 2) each form their own segment.
+        let mut m: BTreeMap<u16, u16> = BTreeMap::new();
+        // 8000 real segments + 1 sentinel = 8001; length = 16 + 8001*8 = 64024 <= 65535.
+        for i in 0..8000u16 {
+            m.insert(i * 2, i.wrapping_add(1));
+        }
+        let data = build_format4(&m).expect("large-but-valid format 4 must build");
+        let seg_count_x2 = u16::from_be_bytes([data[6], data[7]]);
+        assert_eq!(seg_count_x2 as usize, 8001 * 2);
+        let length = u16::from_be_bytes([data[2], data[3]]) as usize;
+        assert_eq!(length, 16 + 8001 * 8);
+        assert_eq!(data.len(), length);
+    }
+
+    #[test]
+    fn format4_oversized_rejected_without_panic() {
+        // A segment count beyond the u16-addressable format-4 size must return a typed
+        // error instead of overflowing/panicking. 8200 isolated segments + sentinel =
+        // 8201 → length = 16 + 8201*8 = 65624 > u16::MAX.
+        let mut m: BTreeMap<u16, u16> = BTreeMap::new();
+        for i in 0..8200u16 {
+            m.insert(i * 2, i.wrapping_add(1));
+        }
+        let result = build_format4(&m);
+        assert!(
+            matches!(result, Err(SubsetError::InvalidFont(_))),
+            "oversized format 4 must be rejected, got {result:?}"
+        );
+    }
 }

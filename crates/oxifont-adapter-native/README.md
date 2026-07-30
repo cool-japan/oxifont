@@ -23,7 +23,7 @@
 
 ```toml
 [dependencies]
-oxifont-adapter-native = "0.1.0"
+oxifont-adapter-native = "0.2.1"
 ```
 
 No Cargo features are required: the correct backend is selected automatically at
@@ -103,7 +103,7 @@ Several variants are platform-gated.
 - [`oxifont-adapter-pure`](../oxifont-adapter-pure) — the Pure-Rust filesystem backend; the cross-platform fallback aliased by this crate
 - [`oxifont-core`](../oxifont-core) — `FontCatalog`, `FaceInfo`, `FontQuery`, `FontError`
 - [`oxifont-parser`](../oxifont-parser) — used by `load_face`
-- [`oxifont`](../oxifont) — facade crate; re-exports `NativeCatalog` as the `native` module and adds `system_with_native()` behind the `native` feature
+- [`oxifont`](../oxifont) — facade crate; does **not** re-export this crate (the `native` feature was removed from the facade in the 0.2.0 release — see `CHANGELOG.md`); depend on `oxifont-adapter-native` directly. No Cargo feature is required on this crate either — the backend is selected automatically at compile time via `target_os` cfg, same as the [Installation](#installation) section above
 
 ## License
 

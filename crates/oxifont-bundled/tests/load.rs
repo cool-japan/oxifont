@@ -130,67 +130,97 @@ fn by_name_unknown_returns_none() {
 
 // ── CJK feature tests ─────────────────────────────────────────────────────────
 //
-// When CJK fonts are zero-byte placeholders, the provider silently omits them
-// from font_data(). These tests verify that behaviour rather than asserting
-// the font is present with valid magic bytes.
+// Noto CJK faces are never vendored (too large). Enabling a CJK feature exposes
+// an accessor that returns REAL font bytes when a developer supplied one at build
+// time, or a typed `FontError::NotFound` otherwise. It must NEVER hand out empty
+// or fabricated bytes. These tests assert that honest contract regardless of
+// whether a font happens to be present in the current build.
+
+/// Assert the honest CJK contract for one accessor / provider name pair.
+#[cfg(any(
+    feature = "bundled-noto-cjk-jp",
+    feature = "bundled-noto-cjk-kr",
+    feature = "bundled-noto-cjk-sc",
+    feature = "bundled-noto-cjk-tc",
+))]
+fn assert_cjk_contract(
+    accessor: Result<&'static [u8], oxifont_core::FontError>,
+    provider_name: &str,
+) {
+    // The accessor either yields a real, valid font or a typed "not found" error
+    // — never an empty or fake slice.
+    match accessor {
+        Ok(bytes) => {
+            assert!(
+                bytes.len() > 1024,
+                "{provider_name}: bundled CJK font must be a substantial file, got {} bytes",
+                bytes.len()
+            );
+            assert!(
+                is_valid_sfnt_magic(bytes),
+                "{provider_name}: bundled CJK font must have a valid SFNT magic"
+            );
+        }
+        Err(e) => {
+            assert!(
+                matches!(e, oxifont_core::FontError::NotFound),
+                "{provider_name}: not-bundled must be a typed FontError::NotFound, got {e:?}"
+            );
+        }
+    }
+
+    // The provider must still expose the Latin faces, and must never list a CJK
+    // entry with empty or invalid bytes.
+    let provider = BundledFontProvider::new();
+    let names: Vec<&str> = provider.font_data().iter().map(|(n, _)| *n).collect();
+    assert!(
+        names.contains(&"NotoSans-Regular"),
+        "Latin NotoSans-Regular must remain available; got {names:?}"
+    );
+    if let Some(bytes) = provider.by_name(provider_name) {
+        assert!(
+            !bytes.is_empty(),
+            "{provider_name}: provider must never expose an empty CJK slice"
+        );
+        assert!(
+            is_valid_sfnt_magic(bytes),
+            "{provider_name}: provider CJK bytes must have a valid SFNT magic"
+        );
+    }
+}
 
 #[test]
 #[cfg(feature = "bundled-noto-cjk-jp")]
-fn cjk_jp_feature_compiles_and_provider_works() {
-    let provider = BundledFontProvider::new();
-    let fonts = provider.font_data();
-    // NotoSans-Regular and NotoSerif-Regular must still be present.
-    let names: Vec<&str> = fonts.iter().map(|(n, _)| *n).collect();
-    assert!(
-        names.contains(&"NotoSans-Regular"),
-        "bundled-noto-cjk-jp should still include NotoSans-Regular"
+fn cjk_jp_resolves_to_real_font_or_typed_error() {
+    assert_cjk_contract(
+        oxifont_bundled::noto_sans_jp_regular(),
+        "NotoSansJP-Regular",
     );
-    // JP font is a placeholder; if present in font_data it must be valid.
-    if let Some(jp_bytes) = provider.by_name("NotoSansJP-Regular") {
-        assert!(
-            is_valid_sfnt_magic(jp_bytes),
-            "NotoSansJP-Regular has invalid SFNT magic"
-        );
-    }
-    // Static is accessible (zero-byte is fine for placeholder).
-    let _ = oxifont_bundled::NOTO_SANS_JP_REGULAR;
 }
 
 #[test]
 #[cfg(feature = "bundled-noto-cjk-kr")]
-fn cjk_kr_feature_compiles_and_provider_works() {
-    let provider = BundledFontProvider::new();
-    let fonts = provider.font_data();
-    let names: Vec<&str> = fonts.iter().map(|(n, _)| *n).collect();
-    assert!(names.contains(&"NotoSans-Regular"));
-    if let Some(kr_bytes) = provider.by_name("NotoSansKR-Regular") {
-        assert!(is_valid_sfnt_magic(kr_bytes));
-    }
-    let _ = oxifont_bundled::NOTO_SANS_KR_REGULAR;
+fn cjk_kr_resolves_to_real_font_or_typed_error() {
+    assert_cjk_contract(
+        oxifont_bundled::noto_sans_kr_regular(),
+        "NotoSansKR-Regular",
+    );
 }
 
 #[test]
 #[cfg(feature = "bundled-noto-cjk-sc")]
-fn cjk_sc_feature_compiles_and_provider_works() {
-    let provider = BundledFontProvider::new();
-    let fonts = provider.font_data();
-    let names: Vec<&str> = fonts.iter().map(|(n, _)| *n).collect();
-    assert!(names.contains(&"NotoSans-Regular"));
-    if let Some(sc_bytes) = provider.by_name("NotoSansSC-Regular") {
-        assert!(is_valid_sfnt_magic(sc_bytes));
-    }
-    let _ = oxifont_bundled::NOTO_SANS_SC_REGULAR;
+fn cjk_sc_resolves_to_real_font_or_typed_error() {
+    assert_cjk_contract(
+        oxifont_bundled::noto_sans_sc_regular(),
+        "NotoSansSC-Regular",
+    );
 }
 
 #[test]
 #[cfg(feature = "bundled-noto-cjk-tc")]
-fn cjk_tc_feature_compiles_and_provider_works() {
-    let provider = BundledFontProvider::new();
-    let fonts = provider.font_data();
-    let names: Vec<&str> = fonts.iter().map(|(n, _)| *n).collect();
-    assert!(names.contains(&"NotoSans-Regular"));
-    if let Some(tc_bytes) = provider.by_name("NotoSansTC-Regular") {
-        assert!(is_valid_sfnt_magic(tc_bytes));
-    }
-    let _ = oxifont_bundled::NOTO_SANS_TC_REGULAR;
+fn cjk_tc_resolves_to_real_font_or_typed_error() {
+    assert_cjk_contract(
+        oxifont_bundled::noto_sans_tc_regular(),
+        "NotoSansTC-Regular",
+    );
 }

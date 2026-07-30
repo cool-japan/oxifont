@@ -263,29 +263,34 @@ pub fn read_u32(data: &[u8], offset: usize) -> Result<u32, WebFontError> {
 
 /// Read a WOFF2 `255UInt16` value from a byte slice starting at `offset`.
 ///
-/// Per the WOFF2 specification, the encoding is:
-/// - first byte `< 253`: value = first byte (1 byte total).
-/// - first byte `== 253`: value = next two bytes as big-endian u16 (3 bytes total).
-/// - first byte `== 254`: value = next two bytes as big-endian u16 + 506 (3 bytes total).
-/// - first byte `== 255`: value = next byte + 253 (2 bytes total).
+/// Per the WOFF2 specification (`Read255UShort`), the encoding is:
+/// - control byte `< 253`: value = control byte (1 byte total).
+/// - control byte `== 253` (wordCode): value = next two bytes as big-endian u16 (3 bytes total).
+/// - control byte `== 254` (oneMoreByteCode2): value = next byte + 506 (2 bytes total).
+/// - control byte `== 255` (oneMoreByteCode1): value = next byte + 253 (2 bytes total).
 ///
 /// Returns `(value, bytes_consumed)`.
 pub fn read_255_u16_slice(data: &[u8], offset: usize) -> Result<(u16, usize), WebFontError> {
-    let b0 = *data.get(offset).ok_or(WebFontError::TooShort)?;
-    match b0 {
-        253 => {
+    const WORD_CODE: u8 = 253;
+    const ONE_MORE_BYTE_CODE1: u8 = 255;
+    const ONE_MORE_BYTE_CODE2: u8 = 254;
+    const LOWEST_U_CODE: u16 = 253;
+
+    let code = *data.get(offset).ok_or(WebFontError::TooShort)?;
+    match code {
+        WORD_CODE => {
             let v = read_u16(data, offset + 1)?;
             Ok((v, 3))
         }
-        254 => {
-            let v = read_u16(data, offset + 1)?;
-            Ok((v.wrapping_add(506), 3))
-        }
-        255 => {
+        ONE_MORE_BYTE_CODE2 => {
             let b1 = *data.get(offset + 1).ok_or(WebFontError::TooShort)?;
-            Ok(((b1 as u16).wrapping_add(253), 2))
+            Ok((b1 as u16 + LOWEST_U_CODE * 2, 2))
         }
-        _ => Ok((b0 as u16, 1)),
+        ONE_MORE_BYTE_CODE1 => {
+            let b1 = *data.get(offset + 1).ok_or(WebFontError::TooShort)?;
+            Ok((b1 as u16 + LOWEST_U_CODE, 2))
+        }
+        _ => Ok((code as u16, 1)),
     }
 }
 
@@ -322,11 +327,41 @@ mod tests {
 
     #[test]
     fn read_255_u16_slice_254() {
-        // b0=254 → next u16_be + 506
-        let data = [254u8, 0x00, 0x00]; // value = 0 + 506 = 506
+        // control=254 → next single byte + 506 (2 bytes total).
+        let data = [254u8, 0x00]; // value = 0 + 506 = 506
         let (v, n) = read_255_u16_slice(&data, 0).expect("should decode 506");
         assert_eq!(v, 506);
-        assert_eq!(n, 3);
+        assert_eq!(n, 2);
+        // A non-zero payload byte: 254, 10 → 10 + 506 = 516.
+        let data = [254u8, 10];
+        let (v, n) = read_255_u16_slice(&data, 0).expect("should decode 516");
+        assert_eq!(v, 516);
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn read_255_u16_slice_all_branches_spec() {
+        // Exercise all four Read255UShort branches per WOFF2 §5.1 in a single stream:
+        //   [ 100 ]            -> 100        (control < 253, 1 byte)
+        //   [ 253, 0x01, 0x2C]-> 300        (wordCode, big-endian u16, 3 bytes)
+        //   [ 254, 44 ]        -> 44 + 506  (oneMoreByteCode2, 2 bytes)
+        //   [ 255, 44 ]        -> 44 + 253  (oneMoreByteCode1, 2 bytes)
+        let stream = [100u8, 253, 0x01, 0x2C, 254, 44, 255, 44];
+        let mut off = 0usize;
+        let (v, n) = read_255_u16_slice(&stream, off).expect("branch: plain");
+        assert_eq!((v, n), (100, 1));
+        off += n;
+        let (v, n) = read_255_u16_slice(&stream, off).expect("branch: word");
+        assert_eq!((v, n), (300, 3));
+        off += n;
+        let (v, n) = read_255_u16_slice(&stream, off).expect("branch: +506");
+        assert_eq!((v, n), (44 + 506, 2));
+        off += n;
+        let (v, n) = read_255_u16_slice(&stream, off).expect("branch: +253");
+        assert_eq!((v, n), (44 + 253, 2));
+        off += n;
+        // Every byte in the stream must have been consumed exactly once.
+        assert_eq!(off, stream.len());
     }
 
     #[test]

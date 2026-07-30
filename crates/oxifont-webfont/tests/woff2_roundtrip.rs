@@ -6,6 +6,7 @@
 // ----------------------------------------------------------------- helpers
 
 /// Build a minimal valid SFNT with 0 tables.
+#[cfg(feature = "woff2")]
 fn minimal_sfnt() -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&[0x00u8, 0x01, 0x00, 0x00]); // sfVersion: TrueType
@@ -17,6 +18,7 @@ fn minimal_sfnt() -> Vec<u8> {
 }
 
 /// Search common system font directories for any `.ttf` file.
+#[cfg(feature = "woff2")]
 fn find_ttf_on_system() -> Option<Vec<u8>> {
     let dirs = [
         "/System/Library/Fonts",

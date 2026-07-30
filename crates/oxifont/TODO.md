@@ -1,7 +1,7 @@
 # oxifont (facade) TODO
 
 ## Status
-Facade crate re-exporting the OxiFont ecosystem. Re-exports `oxifont-core` types unconditionally, `FontDatabase` from `oxifont-adapter-pure` behind `pure` feature, `oxifont-db` behind `db` feature, webfont decoding behind `woff1`/`woff2` features, and subsetting behind `subset` feature. Bundled font catalog (`bundled_fonts()`) and system-with-bundled-fallback (`system_fonts_with_bundled_fallback()`) added behind `bundled-noto` / `db+bundled-noto` features. New feature stubs: `bundled-noto-serif`, `bundled-noto-emoji`, `bundled-noto-cjk` propagated. ~130 SLOC. Zero clippy warnings across all feature combos.
+Facade crate re-exporting the OxiFont ecosystem. Re-exports `oxifont-core` types unconditionally, `FontDatabase` from `oxifont-adapter-pure` behind `pure` feature, `oxifont-db` behind `db` feature, webfont decoding behind `woff1`/`woff2` features, and subsetting behind `subset` feature. Bundled font catalog (`bundled_fonts()`) and system-with-bundled-fallback (`system_fonts_with_bundled_fallback()`) added behind `bundled-noto` / `db+bundled-noto` features. New feature stubs: `bundled-noto-serif`, `bundled-noto-emoji`, `bundled-noto-cjk` propagated. ~130 SLOC. Zero clippy warnings across all feature combos. No functional change to the facade in 0.2.1. 39 tests passing, 0 skipped, 0 failed, with `--all-features`.
 
 ## Core Implementation
 - [x] Add `oxifont::load_font(path) -> Result<ParsedFace, FontError>` top-level convenience function (~10 SLOC)

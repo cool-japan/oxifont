@@ -50,6 +50,8 @@ pub mod gid_map;
 pub mod glyf;
 /// `gvar` per-glyph variation data rewriter.
 pub mod gvar;
+/// Static instancing: pin a variable font at one design location.
+pub mod instance;
 /// `kern` table pair pruning and GID remapping.
 pub mod kern;
 /// Coverage, ClassDef, and GDEF layout table helpers.
@@ -76,10 +78,13 @@ pub mod tables;
 pub mod varfont;
 
 pub use gid_map::SubsetGidMap;
+pub use instance::instance;
 pub use tables::SubsetError;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use tables::{get_i16, get_u16, set_i16, set_u16};
 
 // ---------------------------------------------------------------------------
 // SubsetOptions
@@ -97,9 +102,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 ///
 /// let opts = SubsetOptions::default()
 ///     .strip_hints(true)
-///     .retain_names(false);
+///     .retain_names(false)
+///     .drop_variations(true);
 /// ```
+///
+/// This struct is `#[non_exhaustive]`: build it from
+/// [`SubsetOptions::default`] and the builder methods rather than with a struct
+/// literal, so that a new option can be added without a breaking change.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SubsetOptions {
     /// Drop `fpgm`, `prep`, and `cvt ` (TrueType hint tables).
     ///
@@ -135,6 +146,20 @@ pub struct SubsetOptions {
     /// Codepoints in the requested set that fall outside this range are
     /// silently dropped.
     pub retain_codepoint_range: Option<(char, char)>,
+
+    /// Emit a **static** font: drop `fvar`, `avar`, `gvar`, `cvar`, `HVAR`,
+    /// `VVAR`, `MVAR` and `STAT`.
+    ///
+    /// The retained `glyf` outlines and `hmtx` advances are then the font's
+    /// **default master** — which is the correct static font only if the
+    /// default location is what you wanted. To pin a different location, call
+    /// [`instance()`](crate::instance()) first; its output has no variation
+    /// tables and this flag is then a no-op.
+    ///
+    /// Leaving this `false` on a variable face produces a subset that still
+    /// advertises axes: 2.6× larger on a stock two-axis UI font, and a program
+    /// whose outlines are the default master while `fvar` claims otherwise.
+    pub drop_variations: bool,
 }
 
 impl Default for SubsetOptions {
@@ -144,6 +169,7 @@ impl Default for SubsetOptions {
             retain_layout_tables: true,
             retain_names: true,
             retain_codepoint_range: None,
+            drop_variations: false,
         }
     }
 }
@@ -182,6 +208,16 @@ impl SubsetOptions {
         self.retain_codepoint_range = Some((lo, hi));
         self
     }
+
+    /// Set whether the variation tables (`fvar`, `avar`, `gvar`, `cvar`,
+    /// `HVAR`, `VVAR`, `MVAR`, `STAT`) are dropped, producing a static font at
+    /// the source's default master. See
+    /// [`SubsetOptions::drop_variations`].
+    #[must_use]
+    pub fn drop_variations(mut self, v: bool) -> Self {
+        self.drop_variations = v;
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +251,20 @@ pub struct SubsetStats {
     /// Extension type, which is not in the list above, so a dropped
     /// Extension-wrapped context is not reflected here.
     pub dropped_context_subtables: usize,
+
+    /// The `CFF `/`CFF2` charstrings were copied from the source **verbatim**
+    /// instead of being subset.
+    ///
+    /// The CFF rewriter falls back to a verbatim copy for CID-keyed fonts
+    /// (those carrying an `FDSelect`) and for structures it cannot parse. The
+    /// resulting table is correct only under the *original* glyph numbering,
+    /// while the rest of the subset has been renumbered — so the glyphs render
+    /// as the wrong characters, and the table is as large as the source's.
+    ///
+    /// Callers that embed CFF subsets must check this: when it is `true` the
+    /// only safe options are to embed the original face or to refuse. It is
+    /// always `false` for a `glyf`-flavoured font.
+    pub cff_charstrings_verbatim: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -661,35 +711,6 @@ fn rewrite_name(name_data: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// maxp reader helpers
-// ---------------------------------------------------------------------------
-
-fn get_u16(data: &[u8], offset: usize) -> Option<u16> {
-    data.get(offset..offset + 2)
-        .map(|b| u16::from_be_bytes([b[0], b[1]]))
-}
-
-fn set_u16(data: &mut [u8], offset: usize, value: u16) {
-    if offset + 2 <= data.len() {
-        data[offset] = (value >> 8) as u8;
-        data[offset + 1] = (value & 0xFF) as u8;
-    }
-}
-
-fn set_i16(data: &mut [u8], offset: usize, value: i16) {
-    set_u16(data, offset, value as u16);
-}
-
-// ---------------------------------------------------------------------------
-// head helpers
-// ---------------------------------------------------------------------------
-
-fn get_i16(data: &[u8], offset: usize) -> Option<i16> {
-    data.get(offset..offset + 2)
-        .map(|b| i16::from_be_bytes([b[0], b[1]]))
-}
-
-// ---------------------------------------------------------------------------
 // Main public functions
 // ---------------------------------------------------------------------------
 
@@ -735,7 +756,11 @@ fn subset_from_tables<'a>(
     // -------------------------------------------------------------------------
     // 3. Expand for composite component closure (TrueType only).
     // -------------------------------------------------------------------------
+    // `.notdef` is retained by every entry point's documented contract, and a
+    // PDF CIDFont that loses it silently renumbers glyph 0 into whatever the
+    // caller's lowest requested glyph was.
     let mut expanded_gid_set = old_gid_set.clone();
+    expanded_gid_set.insert(0);
     if !is_cff {
         let glyf_data = get_table(b"glyf")?;
         let loca_data = get_table(b"loca")?;
@@ -896,11 +921,22 @@ fn subset_from_tables<'a>(
     // [`SubsetStats`] so callers can see how much contextual machinery went.
     let mut dropped_context_subtables = 0usize;
 
+    // Set when the CFF rewriter fell back to copying the source charstrings:
+    // correct only under the original glyph numbering, which this subset has
+    // just changed. Surfaced in [`SubsetStats`] so an embedder can refuse.
+    let mut cff_charstrings_verbatim = false;
+
     // Verbatim pass-through tags (copy if present, subject to options).
     // Tags for hint tables — omitted when strip_hints=true.
     let hint_tags: &[&[u8; 4]] = &[b"fpgm", b"prep", b"cvt "];
     // Tags for layout tables — omitted when retain_layout_tables=false.
     let layout_tags: &[&[u8; 4]] = &[b"GDEF", b"GPOS", b"GSUB"];
+    // Tags that make a face variable — omitted when drop_variations=true.
+    // `cvar` and `MVAR` are on the list for completeness; neither is copied by
+    // this pipeline in the first place.
+    let variation_tags: &[&[u8; 4]] = &[
+        b"fvar", b"avar", b"gvar", b"cvar", b"HVAR", b"VVAR", b"MVAR", b"STAT",
+    ];
 
     let verbatim_tags: &[&[u8; 4]] = &[
         // GDEF is handled separately below (rewritten, not verbatim).
@@ -911,7 +947,11 @@ fn subset_from_tables<'a>(
         b"STAT", b"cvt ", b"fpgm", b"prep", b"gasp", b"feat", b"morx",
         // Variable font axis tables (verbatim — gvar is rewritten separately).
         b"fvar", b"avar", // OS-specific.
-        b"DSIG", b"BASE",
+        // `DSIG` is deliberately absent: a digital signature covers the bytes of
+        // the font it was made for, and every table here has just been
+        // rewritten, so carrying it over would ship a signature that is invalid
+        // by construction (and 8–10 KB of it on a stock UI font).
+        b"BASE",
         // Color: COLR is rewritten separately below; CPAL is GID-independent (verbatim).
         b"CPAL",
         // CBDT/CBLC are rewritten separately below (paired bitmap index/data).
@@ -924,6 +964,10 @@ fn subset_from_tables<'a>(
         }
         // Apply retain_layout_tables filter.
         if !opts.retain_layout_tables && layout_tags.contains(&tag) {
+            continue;
+        }
+        // Apply drop_variations filter.
+        if opts.drop_variations && variation_tags.contains(&tag) {
             continue;
         }
         if let Some(&data) = orig_tables.get(tag) {
@@ -978,6 +1022,8 @@ fn subset_from_tables<'a>(
             None,
             One([u8; 4], Vec<u8>),
             Two([u8; 4], Vec<u8>, [u8; 4], Vec<u8>),
+            /// One table plus the CFF verbatim-fallback indicator.
+            Flagged([u8; 4], Vec<u8>, bool),
         }
 
         // Capture references that are shared read-only across all parallel tasks.
@@ -986,6 +1032,7 @@ fn subset_from_tables<'a>(
         let orig_tables_ref = &orig_tables;
         let surviving_codepoints_ref = &surviving_codepoints;
         let retain_layout = opts.retain_layout_tables;
+        let drop_variations = opts.drop_variations;
 
         // Build task list as a vec of boxed closures.  Each closure captures
         // immutable references to the data it needs and returns
@@ -1101,43 +1148,41 @@ fn subset_from_tables<'a>(
             // CFF
             if let Some(&d) = orig_tables_ref.get(b"CFF ") {
                 v.push(Box::new(move || {
-                    Ok(TableResult::One(
-                        *b"CFF ",
-                        cff::rewrite_cff(d, gid_remap_ref),
-                    ))
+                    let (bytes, verbatim) = cff::rewrite_cff_checked(d, gid_remap_ref);
+                    Ok(TableResult::Flagged(*b"CFF ", bytes, verbatim))
                 }));
             }
             // CFF2
             if let Some(&d) = orig_tables_ref.get(b"CFF2") {
                 v.push(Box::new(move || {
-                    Ok(TableResult::One(
-                        *b"CFF2",
-                        cff::rewrite_cff2(d, gid_remap_ref),
-                    ))
+                    let (bytes, verbatim) = cff::rewrite_cff2_checked(d, gid_remap_ref);
+                    Ok(TableResult::Flagged(*b"CFF2", bytes, verbatim))
                 }));
             }
-            // HVAR — fallible: propagates SubsetError on malformed table data.
-            if let Some(&d) = orig_tables_ref.get(b"HVAR") {
-                v.push(Box::new(move || {
-                    let out = varfont::rewrite_hvar_vvar(d, gid_remap_ref, new_glyph_count)?;
-                    Ok(TableResult::One(*b"HVAR", out))
-                }));
-            }
-            // VVAR — fallible: propagates SubsetError on malformed table data.
-            if let Some(&d) = orig_tables_ref.get(b"VVAR") {
-                v.push(Box::new(move || {
-                    let out = varfont::rewrite_hvar_vvar(d, gid_remap_ref, new_glyph_count)?;
-                    Ok(TableResult::One(*b"VVAR", out))
-                }));
-            }
-            // gvar
-            if let Some(&d) = orig_tables_ref.get(b"gvar") {
-                v.push(Box::new(move || {
-                    Ok(TableResult::One(
-                        *b"gvar",
-                        gvar::rewrite_gvar(d, rev_remap_ref, new_glyph_count),
-                    ))
-                }));
+            if !drop_variations {
+                // HVAR — fallible: propagates SubsetError on malformed table data.
+                if let Some(&d) = orig_tables_ref.get(b"HVAR") {
+                    v.push(Box::new(move || {
+                        let out = varfont::rewrite_hvar_vvar(d, gid_remap_ref, new_glyph_count)?;
+                        Ok(TableResult::One(*b"HVAR", out))
+                    }));
+                }
+                // VVAR — fallible: propagates SubsetError on malformed table data.
+                if let Some(&d) = orig_tables_ref.get(b"VVAR") {
+                    v.push(Box::new(move || {
+                        let out = varfont::rewrite_hvar_vvar(d, gid_remap_ref, new_glyph_count)?;
+                        Ok(TableResult::One(*b"VVAR", out))
+                    }));
+                }
+                // gvar
+                if let Some(&d) = orig_tables_ref.get(b"gvar") {
+                    v.push(Box::new(move || {
+                        Ok(TableResult::One(
+                            *b"gvar",
+                            gvar::rewrite_gvar(d, rev_remap_ref, new_glyph_count),
+                        ))
+                    }));
+                }
             }
 
             v
@@ -1161,6 +1206,10 @@ fn subset_from_tables<'a>(
                 TableResult::Two(tag1, data1, tag2, data2) => {
                     output_tables.push((tag1, Cow::Owned(data1)));
                     output_tables.push((tag2, Cow::Owned(data2)));
+                }
+                TableResult::Flagged(tag, data, verbatim) => {
+                    cff_charstrings_verbatim |= verbatim;
+                    output_tables.push((tag, Cow::Owned(data)));
                 }
             }
         }
@@ -1262,33 +1311,40 @@ fn subset_from_tables<'a>(
 
         // CFF : rewrite for subset GID space (or copy verbatim on parse failure).
         if let Some(&cff_data) = orig_tables.get(b"CFF ") {
-            output_tables.push((*b"CFF ", Cow::Owned(cff::rewrite_cff(cff_data, &gid_remap))));
+            let (bytes, verbatim) = cff::rewrite_cff_checked(cff_data, &gid_remap);
+            cff_charstrings_verbatim |= verbatim;
+            output_tables.push((*b"CFF ", Cow::Owned(bytes)));
         }
         // CFF2: variable OpenType — rewrite CharStrings for subset GID space.
         // Falls back to verbatim copy on parse failure or CID-keyed fonts.
         if let Some(&cff2_data) = orig_tables.get(b"CFF2") {
-            let rewritten = cff::rewrite_cff2(cff2_data, &gid_remap);
-            output_tables.push((*b"CFF2", Cow::Owned(rewritten)));
+            let (bytes, verbatim) = cff::rewrite_cff2_checked(cff2_data, &gid_remap);
+            cff_charstrings_verbatim |= verbatim;
+            output_tables.push((*b"CFF2", Cow::Owned(bytes)));
         }
 
-        // HVAR / VVAR
-        if let Some(hvar_data) = orig_tables.get(b"HVAR") {
-            if let Ok(out) = varfont::rewrite_hvar_vvar(hvar_data, &gid_remap, new_glyph_count) {
-                output_tables.push((*b"HVAR", Cow::Owned(out)));
+        if !opts.drop_variations {
+            // HVAR / VVAR
+            if let Some(hvar_data) = orig_tables.get(b"HVAR") {
+                if let Ok(out) = varfont::rewrite_hvar_vvar(hvar_data, &gid_remap, new_glyph_count)
+                {
+                    output_tables.push((*b"HVAR", Cow::Owned(out)));
+                }
             }
-        }
-        if let Some(vvar_data) = orig_tables.get(b"VVAR") {
-            if let Ok(out) = varfont::rewrite_hvar_vvar(vvar_data, &gid_remap, new_glyph_count) {
-                output_tables.push((*b"VVAR", Cow::Owned(out)));
+            if let Some(vvar_data) = orig_tables.get(b"VVAR") {
+                if let Ok(out) = varfont::rewrite_hvar_vvar(vvar_data, &gid_remap, new_glyph_count)
+                {
+                    output_tables.push((*b"VVAR", Cow::Owned(out)));
+                }
             }
-        }
 
-        // gvar
-        if let Some(&gvar_data) = orig_tables.get(b"gvar") {
-            output_tables.push((
-                *b"gvar",
-                Cow::Owned(gvar::rewrite_gvar(gvar_data, &rev_remap, new_glyph_count)),
-            ));
+            // gvar
+            if let Some(&gvar_data) = orig_tables.get(b"gvar") {
+                output_tables.push((
+                    *b"gvar",
+                    Cow::Owned(gvar::rewrite_gvar(gvar_data, &rev_remap, new_glyph_count)),
+                ));
+            }
         }
     }
 
@@ -1327,6 +1383,7 @@ fn subset_from_tables<'a>(
         glyphs_retained: new_glyph_count,
         tables_retained,
         dropped_context_subtables,
+        cff_charstrings_verbatim,
     };
 
     Ok((subset_bytes, stats, gid_map))

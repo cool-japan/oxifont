@@ -5,7 +5,7 @@
 
 `oxifont-subset` is the subsetting layer of the OxiFont family. Given raw SFNT font bytes and a set of Unicode codepoints (or glyph IDs), it produces a new, minimal SFNT containing only the requested glyphs — plus `.notdef` and any transitively-referenced composite components — and rewrites every affected table so the result is a valid, standalone font.
 
-The subsetter handles both TrueType (`glyf`/`loca`) and CFF/CFF2 outline formats, remaps glyph IDs to a dense space starting at 0, and rewrites the full table set: `glyf`, `loca`, `cmap`, `hmtx`/`vmtx`, `maxp`, `head`, `hhea`/`vhea`, `post`, `name`, layout tables (GSUB/GPOS/GDEF), `kern`, `OS/2`, variation tables (`gvar`, HVAR/VVAR), and colour tables (COLR, CPAL, CBDT/CBLC, sbix, SVG), plus MATH. It is `#![forbid(unsafe_code)]` and 100% Pure Rust. With the optional `parallel` feature the heavy independent table rewrites are dispatched to a Rayon thread pool; output is bit-for-bit identical to the sequential path.
+The subsetter handles both TrueType (`glyf`/`loca`) and CFF/CFF2 outline formats, remaps glyph IDs to a dense space starting at 0, and rewrites the full table set: `glyf`, `loca`, `cmap`, `hmtx`/`vmtx`, `maxp`, `head`, `hhea`/`vhea`, `post`, `name`, layout tables (GSUB/GPOS/GDEF), `kern`, `OS/2`, variation tables (`gvar`, HVAR/VVAR), and colour tables (COLR, CPAL, CBDT/CBLC, sbix, SVG), plus MATH. Alongside subsetting, [`instance()`](#static-instancing) pins a variable face at one design location and produces a static font — the outlines and metrics evaluated at that location, with every variation table removed and glyph IDs untouched. It is `#![forbid(unsafe_code)]` and 100% Pure Rust. With the optional `parallel` feature the heavy independent table rewrites are dispatched to a Rayon thread pool; output is bit-for-bit identical to the sequential path.
 
 ## Installation
 
@@ -45,8 +45,9 @@ let font_data = std::fs::read("NotoSans-Regular.ttf")?;
 let cps: BTreeSet<char> = "Hello".chars().collect();
 
 let opts = SubsetOptions::default()
-    .strip_hints(true)    // drop fpgm/prep/cvt
-    .retain_names(false); // keep only name IDs 0–6
+    .strip_hints(true)       // drop fpgm/prep/cvt
+    .retain_names(false)     // keep only name IDs 0–6
+    .drop_variations(true);  // drop fvar/avar/gvar/cvar/HVAR/VVAR/MVAR/STAT
 
 let (bytes, stats) = subset_font_with_options(&font_data, &cps, &opts)?;
 println!(
@@ -129,6 +130,59 @@ let cid = gid_map.new_gid(42).expect("requested glyphs are always mapped");
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+### Static instancing
+
+`instance(font_data, face_index, coords) -> Result<Vec<u8>, SubsetError>` evaluates a `glyf`-flavoured
+variable face at one **fully pinned** location and returns a complete static SFNT.
+
+- `coords` is `(axis tag, value)` in the same **user** units `fvar` records (`wght = 700.0`,
+  `wdth = 87.5`), not normalised F2Dot14. Values are clamped to each axis's `[min, max]`; an axis
+  absent from the list pins at its `fvar` default; a tag that names no axis is
+  `SubsetError::UnknownAxis`, because silently ignoring a typo would embed the default instance while
+  reporting success.
+- `font_data` may be a `ttcf` collection, selected by `face_index` exactly as `subset_font_at_face`
+  does. The result is always a single-face SFNT at offset 0.
+- **Glyph IDs do not move.** Same glyph count, same order — so `cmap`, `GSUB`, `GPOS`, `GDEF`, `kern`,
+  `COLR`, `MATH` and `sbix` are carried over verbatim, and any glyph ID you already hold stays valid.
+- Dropped: `fvar`, `avar`, `gvar`, `cvar`, `HVAR`, `VVAR`, `MVAR`, `STAT` (the face is no longer
+  variable), `DSIG` (a signature over rewritten bytes), and `cvt `/`fpgm`/`prep`/`gasp` together with
+  every per-glyph instruction stream — hint programs tuned against the default master mis-grid-fit an
+  instanced outline, and leaving them without their `cvt `/`fpgm` is worse still.
+- Rebuilt: `glyf`, `loca`, `hmtx`/`vmtx` (from the four phantom points, so an empty glyph whose
+  advance varies is covered too), `hhea`/`vhea`, `head`, `maxp`, and `OS/2`
+  `usWeightClass`/`usWidthClass`/`fsSelection`, `head.macStyle` and `post.italicAngle` from the pinned
+  location.
+- The function is a pure, byte-deterministic function of its inputs.
+
+Because glyph IDs are preserved, instancing and subsetting compose by simply running one after the
+other — the instanced bytes go straight into any entry point, at `face_index = 0`:
+
+```rust,no_run
+use std::collections::{BTreeMap, BTreeSet};
+use oxifont_subset::{instance, subset_with_gid_set_at_face_mapped, SubsetOptions};
+
+let font_data = std::fs::read("SegUIVar.ttf")?;
+
+// 1. Pin the design location. Glyph IDs are unchanged, so a gid set collected
+//    against the original face is still valid against the result.
+let static_bytes = instance(&font_data, 0, &[(*b"wght", 700.0), (*b"opsz", 10.5)])?;
+
+// 2. Subset the static bytes as usual. `drop_variations` is a no-op here — the
+//    instancer already removed every variation table.
+let gids: BTreeSet<u16> = [0u16, 36, 37, 68].into_iter().collect();
+let opts = SubsetOptions::default()
+    .retain_layout_tables(false)
+    .retain_names(false);
+let (bytes, stats, gid_map) =
+    subset_with_gid_set_at_face_mapped(&static_bytes, 0, &gids, &BTreeMap::new(), &opts)?;
+# let _ = (bytes, stats, gid_map);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Without step 1, a subset of a variable face embeds its **default master** while still advertising
+axes; `SubsetOptions::drop_variations` removes the axes but cannot change which master the outlines
+are. Instancing is the only way to embed a location that is not the default.
+
 ### `SubsetOptions` (builder)
 
 | Field / method | Default | Description |
@@ -137,8 +191,9 @@ let cid = gid_map.new_gid(42).expect("requested glyphs are always mapped");
 | `retain_layout_tables` / `.retain_layout_tables(bool)` | `true` | Keep `GSUB`, `GPOS`, `GDEF` |
 | `retain_names` / `.retain_names(bool)` | `true` | Keep the full `name` table; `false` keeps only IDs 0–6 |
 | `retain_codepoint_range` / `.retain_codepoint_range(lo, hi)` | `None` | Restrict the cmap scan to `[lo, hi]` (inclusive) |
+| `drop_variations` / `.drop_variations(bool)` | `false` | Drop `fvar`, `avar`, `gvar`, `cvar`, `HVAR`, `VVAR`, `MVAR`, `STAT` — the retained outlines are then the source's *default master* |
 
-`SubsetOptions::default()` provides the defaults above; all builder methods are `#[must_use]`.
+`SubsetOptions::default()` provides the defaults above; all builder methods are `#[must_use]`. The struct is `#[non_exhaustive]`: build it from `default()` plus the builder methods rather than a struct literal.
 
 ### `SubsetStats`
 
@@ -148,6 +203,8 @@ let cid = gid_map.new_gid(42).expect("requested glyphs are always mapped");
 | `subset_size` | `usize` | Subset font size in bytes |
 | `glyphs_retained` | `u16` | Glyphs in the subset (including `.notdef`) |
 | `tables_retained` | `Vec<[u8; 4]>` | 4-byte tags of all retained tables |
+| `dropped_context_subtables` | `usize` | Advanced GSUB/GPOS subtables dropped as malformed or unmatchable under the subset |
+| `cff_charstrings_verbatim` | `bool` | The `CFF `/`CFF2` charstrings were copied from the source instead of subset (CID-keyed or unparseable). The table is then correct only under the *original* glyph numbering — embed the original face or refuse. Always `false` for `glyf` outlines |
 
 ### `tables` module — SFNT directory read/write
 
@@ -218,6 +275,8 @@ Each module exposes the rewriter used by the pipeline; they are public so advanc
 | `InvalidFont(String)` | Structurally invalid font data (truncated header, malformed sub-table, a `ttcf` container handed to a non-`_at_face` entry point, …), or a requested subset whose format-4 `cmap` sub-table would exceed the ~8189-segment addressable size |
 | `TableMissing([u8; 4])` | A required table (`cmap`, `glyf`, `loca`, `head`, `hhea`, `hmtx`, …) is absent |
 | `FaceIndexOutOfRange { index, count }` | A `face_index` at or beyond `face_count(data)` |
+| `UnknownAxis([u8; 4])` | A tag passed to `instance()` names no `fvar` axis |
+| `Unsupported(&'static str)` | `instance()` was handed a face with no `fvar` axes, or one with `CFF`/`CFF2` outlines |
 | `Io(std::io::Error)` | I/O error (file paths / tests); implements `From<std::io::Error>` |
 
 ## Cross-references

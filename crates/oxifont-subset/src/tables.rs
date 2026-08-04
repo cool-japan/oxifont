@@ -24,6 +24,17 @@ pub enum SubsetError {
         /// The number of faces available.
         count: u32,
     },
+    /// A tag in the requested instancing coordinates names no `fvar` axis.
+    ///
+    /// Returned by [`crate::instance()`]. Ignoring an unknown tag instead would
+    /// turn a typo into "the default instance embedded successfully", which is
+    /// exactly the failure static instancing exists to prevent.
+    UnknownAxis([u8; 4]),
+    /// The operation is not implemented for this font's structure.
+    ///
+    /// The payload names the structure, e.g. a face with no `fvar` axes or with
+    /// `CFF`/`CFF2` outlines handed to [`crate::instance()`].
+    Unsupported(&'static str),
     /// I/O error (used in tests / file paths).
     Io(std::io::Error),
 }
@@ -42,6 +53,14 @@ impl std::fmt::Display for SubsetError {
             SubsetError::FaceIndexOutOfRange { index, count } => {
                 write!(f, "face index {index} out of range (count={count})")
             }
+            SubsetError::UnknownAxis(tag) => {
+                write!(
+                    f,
+                    "no such variation axis: {}",
+                    std::str::from_utf8(tag).unwrap_or("????")
+                )
+            }
+            SubsetError::Unsupported(what) => write!(f, "unsupported: {what}"),
             SubsetError::Io(e) => write!(f, "I/O error: {e}"),
         }
     }
@@ -60,6 +79,43 @@ impl From<std::io::Error> for SubsetError {
     fn from(e: std::io::Error) -> Self {
         SubsetError::Io(e)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Big-endian scalar field accessors
+// ---------------------------------------------------------------------------
+//
+// Shared by every table rewriter and by the instancer, which patch fixed
+// offsets inside `head` / `hhea` / `maxp` / `OS/2` copies. `checked_add` keeps a
+// hostile offset from wrapping into a panic on the slice range.
+
+/// Read a big-endian `uint16` at `offset`, or `None` when it does not fit.
+pub(crate) fn get_u16(data: &[u8], offset: usize) -> Option<u16> {
+    let end = offset.checked_add(2)?;
+    data.get(offset..end)
+        .map(|b| u16::from_be_bytes([b[0], b[1]]))
+}
+
+/// Read a big-endian `int16` at `offset`, or `None` when it does not fit.
+pub(crate) fn get_i16(data: &[u8], offset: usize) -> Option<i16> {
+    let end = offset.checked_add(2)?;
+    data.get(offset..end)
+        .map(|b| i16::from_be_bytes([b[0], b[1]]))
+}
+
+/// Write a big-endian `uint16` at `offset`; a short buffer is left untouched.
+pub(crate) fn set_u16(data: &mut [u8], offset: usize, value: u16) {
+    if let Some(slot) = offset
+        .checked_add(2)
+        .and_then(|end| data.get_mut(offset..end))
+    {
+        slot.copy_from_slice(&value.to_be_bytes());
+    }
+}
+
+/// Write a big-endian `int16` at `offset`; a short buffer is left untouched.
+pub(crate) fn set_i16(data: &mut [u8], offset: usize, value: i16) {
+    set_u16(data, offset, value as u16);
 }
 
 // ---------------------------------------------------------------------------

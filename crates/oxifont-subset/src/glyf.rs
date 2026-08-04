@@ -7,12 +7,15 @@ use crate::tables::SubsetError;
 // Composite glyph flag bits
 // ---------------------------------------------------------------------------
 
-const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
-const WE_HAVE_A_SCALE: u16 = 0x0008;
-const MORE_COMPONENTS: u16 = 0x0020;
-const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
-const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
-const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
+pub(crate) const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
+pub(crate) const ARGS_ARE_XY_VALUES: u16 = 0x0002;
+pub(crate) const WE_HAVE_A_SCALE: u16 = 0x0008;
+pub(crate) const MORE_COMPONENTS: u16 = 0x0020;
+pub(crate) const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
+pub(crate) const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
+pub(crate) const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
+pub(crate) const SCALED_COMPONENT_OFFSET: u16 = 0x0800;
+pub(crate) const UNSCALED_COMPONENT_OFFSET: u16 = 0x1000;
 
 // ---------------------------------------------------------------------------
 // loca helpers
@@ -20,7 +23,7 @@ const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
 
 /// Read a `loca` entry at index `gid`.  Returns `(start, end)` in bytes inside
 /// `glyf`.
-fn loca_entry(loca: &[u8], format: i16, gid: u16) -> Option<(usize, usize)> {
+pub(crate) fn loca_entry(loca: &[u8], format: i16, gid: u16) -> Option<(usize, usize)> {
     let idx = gid as usize;
     if format == 0 {
         // Short format: u16, multiply by 2.
@@ -251,29 +254,33 @@ pub fn rewrite_glyf_loca(
     // Final loca entry (end of last glyph).
     loca_offsets.push(new_glyf.len() as u32);
 
-    // Choose loca format: format 0 (u16 halved) if fits in 131070 bytes.
-    let new_loca_format = if new_glyf.len() <= 0x1FFFE {
-        0i16
-    } else {
-        1i16
-    };
+    let (new_loca, new_loca_format) = build_loca(&loca_offsets);
 
-    let new_loca = if new_loca_format == 0 {
-        // Short: u16, divide by 2.
-        let mut loca_bytes = Vec::with_capacity(loca_offsets.len() * 2);
-        for &off in &loca_offsets {
+    Ok((new_glyf, new_loca, new_loca_format))
+}
+
+/// Serialize a `loca` table from `numGlyphs + 1` ascending byte offsets into
+/// `glyf`, choosing the narrowest format that can represent them.
+///
+/// Returns the table bytes and the `head.indexToLocFormat` value to store
+/// alongside them (`0` short, `1` long). The short format stores
+/// `byte_offset / 2`, so it is only usable while every glyph is padded to an
+/// even length and the total stays within `0x1FFFE`; both callers pad, so the
+/// halving is exact rather than truncating.
+pub(crate) fn build_loca(offsets: &[u32]) -> (Vec<u8>, i16) {
+    let total = offsets.last().copied().unwrap_or(0);
+    if total <= 0x1FFFE {
+        let mut loca_bytes = Vec::with_capacity(offsets.len() * 2);
+        for &off in offsets {
             let halved = (off / 2) as u16;
             loca_bytes.extend_from_slice(&halved.to_be_bytes());
         }
-        loca_bytes
+        (loca_bytes, 0i16)
     } else {
-        // Long: u32.
-        let mut loca_bytes = Vec::with_capacity(loca_offsets.len() * 4);
-        for &off in &loca_offsets {
+        let mut loca_bytes = Vec::with_capacity(offsets.len() * 4);
+        for &off in offsets {
             loca_bytes.extend_from_slice(&off.to_be_bytes());
         }
-        loca_bytes
-    };
-
-    Ok((new_glyf, new_loca, new_loca_format))
+        (loca_bytes, 1i16)
+    }
 }

@@ -17,6 +17,24 @@
 //! let cps: BTreeSet<char> = ['A', 'B', 'C'].iter().copied().collect();
 //! let subset_bytes = subset_font(&font_data, &cps).expect("subset failed");
 //! ```
+//!
+//! # Entry-point naming
+//!
+//! The subsetting entry points come in a small matrix. The base names —
+//! [`subset_font`], [`subset_font_with_options`], [`subset_by_gids`],
+//! [`subset_with_gid_set`] — read a single per-face SFNT at offset 0 and
+//! return the subset bytes (plus [`SubsetStats`] where applicable). Two
+//! orthogonal suffixes extend them:
+//!
+//! | Suffix | Effect |
+//! |--------|--------|
+//! | `_at_face` | Takes a `face_index` after `font_data`, so a `ttcf` collection (every stock Windows CJK font) can be subset without pre-slicing. See [`face_count`]. |
+//! | `_mapped` | Returns a [`SubsetGidMap`] as an extra tuple element, recovering the old ↔ new glyph-ID renumbering the subset performed. |
+//!
+//! [`subset_with_gid_set_at_face_mapped`] combines both. The base entry points
+//! reject a `ttcf` container rather than silently picking face 0 — a
+//! collection's faces are different fonts, so which one to subset is the
+//! caller's decision.
 
 /// CBDT/CBLC color bitmap table subsetting.
 pub mod cbdt;
@@ -26,6 +44,8 @@ pub mod cff;
 pub mod cmap;
 /// COLR table v0 subsetting: remap base/layer GIDs and drop removed records.
 pub mod colr;
+/// Old ↔ new glyph-ID mapping produced by a subset operation.
+pub mod gid_map;
 /// `glyf` and `loca` table rewriting utilities.
 pub mod glyf;
 /// `gvar` per-glyph variation data rewriter.
@@ -55,6 +75,7 @@ pub mod tables;
 /// HVAR / VVAR delta-set index map rewriter for variable fonts.
 pub mod varfont;
 
+pub use gid_map::SubsetGidMap;
 pub use tables::SubsetError;
 
 use std::borrow::Cow;
@@ -672,31 +693,22 @@ fn get_i16(data: &[u8], offset: usize) -> Option<i16> {
 // Main public functions
 // ---------------------------------------------------------------------------
 
-/// Core subsetting engine: takes a pre-computed set of old GIDs and an
-/// (already-filtered) codepoint→old-GID mapping, applies the full table
-/// rewriting pipeline, and returns the subset font bytes together with
-/// [`SubsetStats`].
+/// Core subsetting engine, operating on an already-parsed table directory.
 ///
-/// Callers that need higher-level entry points should use [`subset_font`],
-/// [`subset_by_gids`], [`subset_font_for_web`], or [`subset_font_for_pdf`].
+/// `original_size` is what [`SubsetStats::original_size`] should report — the
+/// size of the whole input buffer, which for a `ttcf` collection is the whole
+/// collection rather than the selected face.
 ///
-/// # Errors
-/// Returns [`SubsetError`] if the font data is structurally invalid or a
-/// required table is absent.
-pub fn subset_with_gid_set(
-    font_data: &[u8],
+/// Returns the subset bytes, the statistics, and the old ↔ new glyph-ID map;
+/// the public wrappers drop whichever parts their signature does not carry.
+fn subset_from_tables<'a>(
+    orig_tables: &HashMap<[u8; 4], &'a [u8]>,
+    original_size: usize,
     old_gid_set: &BTreeSet<u16>,
     cp_to_old_gid: &BTreeMap<u32, u16>,
     opts: &SubsetOptions,
-) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
-    let original_size = font_data.len();
-
-    // -------------------------------------------------------------------------
-    // 1. Parse table directory.
-    // -------------------------------------------------------------------------
-    let orig_tables = tables::read_table_directory(font_data)?;
-
-    let get_table = |tag: &[u8; 4]| -> Result<&[u8], SubsetError> {
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
+    let get_table = |tag: &[u8; 4]| -> Result<&'a [u8], SubsetError> {
         orig_tables
             .get(tag)
             .copied()
@@ -746,6 +758,11 @@ pub fn subset_with_gid_set(
     for (&old, &new) in &gid_remap {
         rev_remap.insert(new, old);
     }
+
+    // The same renumbering in the form callers can consult: a PDF CIDFont has
+    // to emit the *new* GIDs as CIDs, and the composite closure above means
+    // they are not predictable from `old_gid_set` alone.
+    let gid_map = SubsetGidMap::from_sorted_old_gids(expanded_gid_set.iter().copied().collect());
 
     // -------------------------------------------------------------------------
     // 5. Rewrite tables.
@@ -1312,7 +1329,123 @@ pub fn subset_with_gid_set(
         dropped_context_subtables,
     };
 
-    Ok((subset_bytes, stats))
+    Ok((subset_bytes, stats, gid_map))
+}
+
+/// Core subsetting engine: takes a pre-computed set of old GIDs and an
+/// (already-filtered) codepoint→old-GID mapping, applies the full table
+/// rewriting pipeline, and returns the subset font bytes together with
+/// [`SubsetStats`].
+///
+/// Callers that need higher-level entry points should use [`subset_font`],
+/// [`subset_by_gids`], [`subset_font_for_web`], or [`subset_font_for_pdf`].
+/// Use [`subset_with_gid_set_mapped`] to also receive the old ↔ new glyph-ID
+/// map, and [`subset_with_gid_set_at_face`] to select a face out of a `ttcf`
+/// collection.
+///
+/// # Errors
+/// Returns [`SubsetError`] if the font data is structurally invalid (including
+/// a `ttcf` collection, which must go through an `_at_face` entry point) or a
+/// required table is absent.
+pub fn subset_with_gid_set(
+    font_data: &[u8],
+    old_gid_set: &BTreeSet<u16>,
+    cp_to_old_gid: &BTreeMap<u32, u16>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
+    let (bytes, stats, _map) =
+        subset_with_gid_set_mapped(font_data, old_gid_set, cp_to_old_gid, opts)?;
+    Ok((bytes, stats))
+}
+
+/// As [`subset_with_gid_set`], additionally returning the [`SubsetGidMap`]
+/// describing the old ↔ new glyph-ID renumbering.
+///
+/// The subset bytes and statistics are identical to [`subset_with_gid_set`];
+/// only the map is added.
+///
+/// # Errors
+/// As [`subset_with_gid_set`].
+pub fn subset_with_gid_set_mapped(
+    font_data: &[u8],
+    old_gid_set: &BTreeSet<u16>,
+    cp_to_old_gid: &BTreeMap<u32, u16>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
+    let orig_tables = tables::read_table_directory(font_data)?;
+    subset_from_tables(
+        &orig_tables,
+        font_data.len(),
+        old_gid_set,
+        cp_to_old_gid,
+        opts,
+    )
+}
+
+/// As [`subset_with_gid_set`], selecting face `face_index` of `font_data`.
+///
+/// `font_data` may be a plain per-face SFNT (in which case the only valid
+/// index is `0` and the behaviour is byte-identical to
+/// [`subset_with_gid_set`]) or a `ttcf` collection.
+///
+/// # Errors
+/// Returns [`SubsetError::FaceIndexOutOfRange`] when `face_index` is at or
+/// beyond [`face_count`], otherwise as [`subset_with_gid_set`].
+pub fn subset_with_gid_set_at_face(
+    font_data: &[u8],
+    face_index: u32,
+    old_gid_set: &BTreeSet<u16>,
+    cp_to_old_gid: &BTreeMap<u32, u16>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
+    let (bytes, stats, _map) = subset_with_gid_set_at_face_mapped(
+        font_data,
+        face_index,
+        old_gid_set,
+        cp_to_old_gid,
+        opts,
+    )?;
+    Ok((bytes, stats))
+}
+
+/// The fully general byte-slice entry point: face selection *and* the
+/// glyph-ID map.
+///
+/// Equivalent to [`subset_with_gid_set`] with both suffixes applied; every
+/// other entry point that takes raw font bytes is a specialisation of it.
+/// ([`subset_with_table_map_mapped`] is the equivalent for callers that
+/// already hold a parsed `SfntTableMap`.)
+///
+/// # Errors
+/// As [`subset_with_gid_set_at_face`].
+pub fn subset_with_gid_set_at_face_mapped(
+    font_data: &[u8],
+    face_index: u32,
+    old_gid_set: &BTreeSet<u16>,
+    cp_to_old_gid: &BTreeMap<u32, u16>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
+    let orig_tables = tables::read_table_directory_at_face(font_data, face_index)?;
+    subset_from_tables(
+        &orig_tables,
+        font_data.len(),
+        old_gid_set,
+        cp_to_old_gid,
+        opts,
+    )
+}
+
+/// Returns the number of faces `font_data` holds.
+///
+/// A plain TTF/OTF holds exactly one face; a `ttcf` collection holds its
+/// declared `numFonts`. Every index in `0..face_count(data)?` is accepted by
+/// the `_at_face` entry points.
+///
+/// # Errors
+/// Returns [`SubsetError::InvalidFont`] when `font_data` is neither a
+/// recognised per-face SFNT nor a well-formed `ttcf` collection.
+pub fn face_count(font_data: &[u8]) -> Result<u32, SubsetError> {
+    oxifont_core::sfnt::face_count(font_data).map_err(tables::map_sfnt_error)
 }
 
 /// Subset a TrueType/OpenType font to contain only the given codepoints.
@@ -1339,30 +1472,43 @@ pub fn subset_font(font_data: &[u8], codepoints: &BTreeSet<char>) -> Result<Vec<
     Ok(bytes)
 }
 
-/// Subset a font with explicit [`SubsetOptions`], returning both the subset
-/// bytes and [`SubsetStats`].
+/// As [`subset_font`], selecting face `face_index` of `font_data`.
+///
+/// This is the entry point for a `ttcf` collection — every stock Windows CJK
+/// family (`msgothic.ttc`, `meiryo.ttc`, `YuGothM.ttc`, `msyh.ttc`, …) ships
+/// as one. For a plain TTF/OTF the only valid index is `0`, and the output is
+/// byte-identical to [`subset_font`]. Use [`face_count`] to discover the range
+/// of valid indices.
 ///
 /// # Errors
-/// Returns [`SubsetError`] if the font data is structurally invalid or a
-/// required table is absent.
-pub fn subset_font_with_options(
+/// Returns [`SubsetError::FaceIndexOutOfRange`] when `face_index` is at or
+/// beyond [`face_count`], otherwise as [`subset_font`].
+pub fn subset_font_at_face(
     font_data: &[u8],
+    face_index: u32,
+    codepoints: &BTreeSet<char>,
+) -> Result<Vec<u8>, SubsetError> {
+    let opts = SubsetOptions::default();
+    let (bytes, _stats) =
+        subset_font_with_options_at_face(font_data, face_index, codepoints, &opts)?;
+    Ok(bytes)
+}
+
+/// Resolve `codepoints` through the font's `cmap`, honouring
+/// [`SubsetOptions::retain_codepoint_range`].
+///
+/// Returns the old-GID set (always containing `.notdef`) and the surviving
+/// codepoint→old-GID map.
+fn resolve_codepoints_to_gids(
+    orig_tables: &HashMap<[u8; 4], &[u8]>,
     codepoints: &BTreeSet<char>,
     opts: &SubsetOptions,
-) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
-    // -------------------------------------------------------------------------
-    // Parse table directory (needed for cmap scan).
-    // -------------------------------------------------------------------------
-    let orig_tables = tables::read_table_directory(font_data)?;
-
+) -> Result<(BTreeSet<u16>, BTreeMap<u32, u16>), SubsetError> {
     let cmap_data = orig_tables
         .get(b"cmap")
         .copied()
         .ok_or(SubsetError::TableMissing(*b"cmap"))?;
 
-    // -------------------------------------------------------------------------
-    // Resolve codepoints → old GIDs via cmap (with optional range filter).
-    // -------------------------------------------------------------------------
     let cp_to_old_gid_map = cmap_to_gid_map(cmap_data)?;
 
     let mut old_gid_set: BTreeSet<u16> = BTreeSet::new();
@@ -1385,7 +1531,66 @@ pub fn subset_font_with_options(
         }
     }
 
-    subset_with_gid_set(font_data, &old_gid_set, &cp_to_old_gid, opts)
+    Ok((old_gid_set, cp_to_old_gid))
+}
+
+/// Subset a font with explicit [`SubsetOptions`], returning both the subset
+/// bytes and [`SubsetStats`].
+///
+/// # Errors
+/// Returns [`SubsetError`] if the font data is structurally invalid or a
+/// required table is absent.
+pub fn subset_font_with_options(
+    font_data: &[u8],
+    codepoints: &BTreeSet<char>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
+    let (bytes, stats, _map) = subset_font_with_options_mapped(font_data, codepoints, opts)?;
+    Ok((bytes, stats))
+}
+
+/// As [`subset_font_with_options`], additionally returning the
+/// [`SubsetGidMap`] describing the old ↔ new glyph-ID renumbering.
+///
+/// # Errors
+/// As [`subset_font_with_options`].
+pub fn subset_font_with_options_mapped(
+    font_data: &[u8],
+    codepoints: &BTreeSet<char>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
+    let orig_tables = tables::read_table_directory(font_data)?;
+    let (old_gid_set, cp_to_old_gid) = resolve_codepoints_to_gids(&orig_tables, codepoints, opts)?;
+    subset_from_tables(
+        &orig_tables,
+        font_data.len(),
+        &old_gid_set,
+        &cp_to_old_gid,
+        opts,
+    )
+}
+
+/// As [`subset_font_with_options`], selecting face `face_index` of `font_data`.
+///
+/// # Errors
+/// Returns [`SubsetError::FaceIndexOutOfRange`] when `face_index` is at or
+/// beyond [`face_count`], otherwise as [`subset_font_with_options`].
+pub fn subset_font_with_options_at_face(
+    font_data: &[u8],
+    face_index: u32,
+    codepoints: &BTreeSet<char>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
+    let orig_tables = tables::read_table_directory_at_face(font_data, face_index)?;
+    let (old_gid_set, cp_to_old_gid) = resolve_codepoints_to_gids(&orig_tables, codepoints, opts)?;
+    let (bytes, stats, _map) = subset_from_tables(
+        &orig_tables,
+        font_data.len(),
+        &old_gid_set,
+        &cp_to_old_gid,
+        opts,
+    )?;
+    Ok((bytes, stats))
 }
 
 /// Subset a font by an explicit set of old GIDs, bypassing the cmap scan.
@@ -1398,13 +1603,47 @@ pub fn subset_font_with_options(
 /// Returns [`SubsetError`] if the font data is structurally invalid or a
 /// required table is absent.
 pub fn subset_by_gids(font_data: &[u8], gids: &BTreeSet<u16>) -> Result<Vec<u8>, SubsetError> {
+    let (bytes, _stats, _map) = subset_by_gids_mapped(font_data, gids)?;
+    Ok(bytes)
+}
+
+/// As [`subset_by_gids`], additionally returning the [`SubsetGidMap`].
+///
+/// This is the direct answer to "which new GID did the glyph I asked for get?"
+/// — including for composite components that the closure pulled in but the
+/// caller never requested.
+///
+/// # Errors
+/// As [`subset_by_gids`].
+pub fn subset_by_gids_mapped(
+    font_data: &[u8],
+    gids: &BTreeSet<u16>,
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
     let opts = SubsetOptions::default();
     // Always include .notdef.
     let mut old_gid_set = gids.clone();
     old_gid_set.insert(0);
     // No codepoint mapping — cmap will be empty.
     let cp_to_old_gid: BTreeMap<u32, u16> = BTreeMap::new();
-    let (bytes, _stats) = subset_with_gid_set(font_data, &old_gid_set, &cp_to_old_gid, &opts)?;
+    subset_with_gid_set_mapped(font_data, &old_gid_set, &cp_to_old_gid, &opts)
+}
+
+/// As [`subset_by_gids`], selecting face `face_index` of `font_data`.
+///
+/// # Errors
+/// Returns [`SubsetError::FaceIndexOutOfRange`] when `face_index` is at or
+/// beyond [`face_count`], otherwise as [`subset_by_gids`].
+pub fn subset_by_gids_at_face(
+    font_data: &[u8],
+    face_index: u32,
+    gids: &BTreeSet<u16>,
+) -> Result<Vec<u8>, SubsetError> {
+    let opts = SubsetOptions::default();
+    let mut old_gid_set = gids.clone();
+    old_gid_set.insert(0);
+    let cp_to_old_gid: BTreeMap<u32, u16> = BTreeMap::new();
+    let (bytes, _stats) =
+        subset_with_gid_set_at_face(font_data, face_index, &old_gid_set, &cp_to_old_gid, &opts)?;
     Ok(bytes)
 }
 
@@ -1460,6 +1699,12 @@ pub fn subset_font_for_pdf(
 /// mapping is not needed (the output `cmap` will be empty, suitable for
 /// PDF workflows).
 ///
+/// The map's own tables are used directly, so a map produced by
+/// [`SfntTableMap::parse_face`](oxifont_core::sfnt::SfntTableMap::parse_face)
+/// or
+/// [`parse_at_offset`](oxifont_core::sfnt::SfntTableMap::parse_at_offset)
+/// subsets that face of a `ttcf` collection.
+///
 /// # Errors
 /// Returns [`SubsetError`] if the font data is structurally invalid or a
 /// required table is absent.
@@ -1469,8 +1714,36 @@ pub fn subset_with_table_map(
     cp_to_old_gid: &BTreeMap<u32, u16>,
     opts: &SubsetOptions,
 ) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
+    let (bytes, stats, _map) = subset_with_table_map_mapped(map, gid_set, cp_to_old_gid, opts)?;
+    Ok((bytes, stats))
+}
+
+/// As [`subset_with_table_map`], additionally returning the [`SubsetGidMap`].
+///
+/// # Errors
+/// As [`subset_with_table_map`].
+pub fn subset_with_table_map_mapped(
+    map: &oxifont_core::sfnt::SfntTableMap<'_>,
+    gid_set: &BTreeSet<u16>,
+    cp_to_old_gid: &BTreeMap<u32, u16>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
     // Always include .notdef.
     let mut old_gid_set = gid_set.clone();
     old_gid_set.insert(0);
-    subset_with_gid_set(map.raw(), &old_gid_set, cp_to_old_gid, opts)
+
+    let mut orig_tables: HashMap<[u8; 4], &[u8]> = HashMap::with_capacity(map.num_tables());
+    for tag in map.tags() {
+        if let Some(slice) = map.table(tag) {
+            orig_tables.insert(*tag, slice);
+        }
+    }
+
+    subset_from_tables(
+        &orig_tables,
+        map.raw().len(),
+        &old_gid_set,
+        cp_to_old_gid,
+        opts,
+    )
 }

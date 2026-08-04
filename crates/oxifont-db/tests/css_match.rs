@@ -46,14 +46,14 @@ fn make_ital_var_face(family: &str, ital_max: f32) -> FaceInfo {
         face_index: 0,
         variable_axes: vec![
             VariationAxis {
-                tag: [b'w', b'g', b'h', b't'],
+                tag: *b"wght",
                 min_value: 100.0,
                 max_value: 900.0,
                 default_value: 400.0,
                 name: String::new(),
             },
             VariationAxis {
-                tag: [b'i', b't', b'a', b'l'],
+                tag: *b"ital",
                 min_value: 0.0,
                 max_value: ital_max,
                 default_value: 0.0,
@@ -77,7 +77,7 @@ fn make_wdth_var_face(family: &str, wdth_min: f32, wdth_max: f32) -> FaceInfo {
         source: Source::Memory(Vec::new()),
         face_index: 0,
         variable_axes: vec![VariationAxis {
-            tag: [b'w', b'd', b't', b'h'],
+            tag: *b"wdth",
             min_value: wdth_min,
             max_value: wdth_max,
             default_value: 100.0,
@@ -234,7 +234,7 @@ fn test_ital_axis_preferred_for_italic_query() {
     let has_ital = face
         .variable_axes
         .iter()
-        .any(|ax| ax.tag == [b'i', b't', b'a', b'l'] && ax.max_value >= 1.0);
+        .any(|ax| ax.tag == *b"ital" && ax.max_value >= 1.0);
     assert!(
         has_ital,
         "variable face with ital axis should be preferred for italic query"
@@ -282,9 +282,10 @@ fn test_wdth_axis_preferred_for_condensed_query() {
         .match_best()
         .expect("must match");
 
-    let has_wdth = face.variable_axes.iter().any(|ax| {
-        ax.tag == [b'w', b'd', b't', b'h'] && ax.min_value <= 75.0 && ax.max_value >= 75.0
-    });
+    let has_wdth = face
+        .variable_axes
+        .iter()
+        .any(|ax| ax.tag == *b"wdth" && ax.min_value <= 75.0 && ax.max_value >= 75.0);
     assert!(
         has_wdth,
         "variable face with wdth axis covering 75% should be preferred for condensed query"

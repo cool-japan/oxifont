@@ -10,8 +10,10 @@
 //! - Type 4: MarkBasePos (Format 1)
 //! - Type 5: MarkLigPos (Format 1)
 //! - Type 6: MarkMarkPos (Format 1)
-//! - Type 7: ContextPos (Formats 1, 2 and 3) — see [`crate::otl_context`]
-//! - Type 8: ChainContextPos (Formats 1, 2 and 3) — see [`crate::otl_context`]
+//! - Type 7: ContextPos (Formats 1, 2 and 3) — see the crate-internal
+//!   `otl_context` module
+//! - Type 8: ChainContextPos (Formats 1, 2 and 3) — see the crate-internal
+//!   `otl_context` module
 //! - Type 9: ExtensionPos (Format 1) — recursively rewrites the inner subtype,
 //!   including contextual inner types
 //!

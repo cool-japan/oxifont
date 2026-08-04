@@ -39,7 +39,7 @@ fn make_variable_face(id: u32, family: &str, wght_min: f32, wght_max: f32) -> Fa
         source: Source::Memory(Vec::new()),
         face_index: 0,
         variable_axes: vec![VariationAxis {
-            tag: [b'w', b'g', b'h', b't'],
+            tag: *b"wght",
             min_value: wght_min,
             max_value: wght_max,
             default_value: 400.0,

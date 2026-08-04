@@ -323,7 +323,7 @@ fn test_pdf_subsetter_gid_only() {
 // ---------------------------------------------------------------------------
 
 /// `finalize_into_result` must return a `PdfSubsetResult` with consistent
-/// `bytes` and `stats`.
+/// `bytes`, `stats`, and `gid_map`.
 #[test]
 fn test_pdf_subsetter_finalize_into_result() {
     use oxifont_subset::pdf_subset::PdfSubsetResult;
@@ -332,12 +332,22 @@ fn test_pdf_subsetter_finalize_into_result() {
     let mut subsetter = PdfFontSubsetter::for_pdf(font.clone());
     subsetter.add_text("Hello PDF");
 
-    let PdfSubsetResult { bytes, stats } = subsetter
+    let PdfSubsetResult {
+        bytes,
+        stats,
+        gid_map,
+    } = subsetter
         .finalize_into_result()
         .expect("finalize_into_result failed");
 
     assert_eq!(stats.subset_size, bytes.len());
     assert_eq!(stats.original_size, font.len());
+    assert_eq!(
+        u16::try_from(gid_map.len()).unwrap_or(u16::MAX),
+        stats.glyphs_retained,
+        "the map must carry one entry per retained glyph"
+    );
+    assert_eq!(gid_map.new_gid(0), Some(0), ".notdef must stay GID 0");
     ttf_parser::Face::parse(&bytes, 0).expect("finalize_into_result must produce parseable font");
 }
 

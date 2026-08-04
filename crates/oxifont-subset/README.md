@@ -73,9 +73,61 @@ println!(
 | Function | Description |
 |----------|-------------|
 | `subset_with_gid_set(font_data, old_gid_set, cp_to_old_gid, opts) -> Result<(Vec<u8>, SubsetStats), _>` | Core engine: pre-computed old-GID set + codepoint→old-GID map |
-| `subset_with_table_map(map, gid_set, cp_to_old_gid, opts) -> Result<(Vec<u8>, SubsetStats), _>` | As above but reuses a pre-parsed `oxifont_core::sfnt::SfntTableMap` (skips a second directory walk) |
+| `subset_with_table_map(map, gid_set, cp_to_old_gid, opts) -> Result<(Vec<u8>, SubsetStats), _>` | As above but reuses a pre-parsed `oxifont_core::sfnt::SfntTableMap` (skips a second directory walk); a map from `parse_face` / `parse_at_offset` subsets that face of a collection |
 
 `.notdef` (GID 0) is always retained implicitly, and the composite-component closure is always applied for TrueType fonts.
+
+### Entry-point suffixes: `_at_face` and `_mapped`
+
+Two orthogonal suffixes extend the entry points above.
+
+| Suffix | Effect |
+|--------|--------|
+| `_at_face` | Takes a `face_index: u32` after `font_data`, selecting a face out of a `ttcf` collection — the form every stock Windows CJK family ships in (`msgothic.ttc`, `meiryo.ttc`, `YuGothM.ttc`, `msyh.ttc`, `msjh.ttc`, `simsun.ttc`). For a plain TTF/OTF the only valid index is `0` and the output is byte-identical to the base entry point. |
+| `_mapped` | Returns a `SubsetGidMap` as an extra tuple element, recovering the old ↔ new glyph-ID renumbering the subset performed. |
+
+| Function | Description |
+|----------|-------------|
+| `face_count(font_data) -> Result<u32, SubsetError>` | `1` for a plain TTF/OTF, `numFonts` for a `ttcf` collection; the valid `face_index` range |
+| `subset_font_at_face(font_data, face_index, codepoints)` | `subset_font` for one face of a collection |
+| `subset_font_with_options_at_face(font_data, face_index, codepoints, opts)` | `subset_font_with_options` for one face |
+| `subset_by_gids_at_face(font_data, face_index, gids)` | `subset_by_gids` for one face |
+| `subset_with_gid_set_at_face(font_data, face_index, old_gid_set, cp_to_old_gid, opts)` | Core engine for one face |
+| `subset_font_with_options_mapped(font_data, codepoints, opts)` | …`+ SubsetGidMap` |
+| `subset_by_gids_mapped(font_data, gids)` | …`+ SubsetGidMap` |
+| `subset_with_gid_set_mapped(font_data, old_gid_set, cp_to_old_gid, opts)` | …`+ SubsetGidMap` |
+| `subset_with_table_map_mapped(map, gid_set, cp_to_old_gid, opts)` | …`+ SubsetGidMap` |
+| `subset_with_gid_set_at_face_mapped(font_data, face_index, old_gid_set, cp_to_old_gid, opts)` | Fully general: face selection *and* the map |
+
+The base entry points **reject** a `ttcf` container (`SubsetError::InvalidFont`, "bad SFNT magic") rather than silently subsetting face 0 — a collection's faces are different fonts, so which one to embed is the caller's decision. A face index at or beyond `face_count` is `SubsetError::FaceIndexOutOfRange`, never a panic, and a collection header that is truncated, versioned unknown, declares zero or an unrepresentable `numFonts`, or points a face at bytes that are not an SFNT header is refused before any of it is trusted.
+
+### `SubsetGidMap` — recovering the glyph renumbering
+
+The subsetter renumbers retained glyphs densely from 0, in ascending old-GID order, *after* the composite-component closure has run — so the new IDs cannot be predicted from the requested glyph set alone. A PDF CIDFont embedded with `Identity-H` and `/CIDToGIDMap /Identity` has to emit exactly those new IDs as CIDs; `SubsetGidMap` is how you get them.
+
+| Method | Description |
+|--------|-------------|
+| `.new_gid(old_gid) -> Option<u16>` | Subset GID (= CID under Identity) for an original GID |
+| `.old_gid(new_gid) -> Option<u16>` | Original GID for a subset GID |
+| `.contains_old_gid(old_gid) -> bool` | Whether an original glyph survived |
+| `.new_to_old() -> &[u16]` | The whole assignment indexed by new GID; its length is the subset's glyph count |
+| `.len()` / `.is_empty()` | Number of mapped glyphs (always ≥ 1: `.notdef`) |
+| `.iter() -> impl Iterator<Item = (u16, u16)>` | `(old, new)` pairs in ascending old-GID order |
+
+```rust,no_run
+use std::collections::BTreeSet;
+use oxifont_subset::subset_by_gids_mapped;
+
+let font_data = std::fs::read("NotoSans-Regular.ttf")?;
+let requested: BTreeSet<u16> = [42u16, 7].into_iter().collect();
+
+let (subset, _stats, gid_map) = subset_by_gids_mapped(&font_data, &requested)?;
+
+// The CID to write for the glyph that was old GID 42.
+let cid = gid_map.new_gid(42).expect("requested glyphs are always mapped");
+# let _ = (subset, cid);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
 ### `SubsetOptions` (builder)
 
@@ -101,9 +153,11 @@ println!(
 
 | Item | Description |
 |------|-------------|
-| `read_table_directory(data) -> Result<HashMap<[u8;4], &[u8]>, SubsetError>` | Parse an SFNT directory (delegates to `SfntTableMap`) |
-| `build_sfnt(&[([u8;4], Cow<[u8]>)]) -> Vec<u8>` | Assemble a sorted SFNT, computing offsets, checksums, and `head.checkSumAdjustment` |
+| `read_table_directory(data) -> Result<HashMap<[u8;4], &[u8]>, SubsetError>` | Parse an SFNT directory at offset 0 (delegates to `SfntTableMap::parse`; refuses `ttcf`) |
+| `read_table_directory_at_face(data, face_index) -> Result<HashMap<[u8;4], &[u8]>, SubsetError>` | As above for one face of a `ttcf` collection (delegates to `SfntTableMap::parse_face`) |
+| `build_sfnt(&[([u8;4], Cow<[u8]>)]) -> Vec<u8>` | Assemble a sorted SFNT, computing the sfnt version from the outline table present, spec-conformant search fields, offsets, checksums, and `head.checkSumAdjustment` |
 | `table_checksum(data) -> u32` | OpenType table checksum (big-endian u32 word sum) |
+| `SFNT_VERSION_TRUETYPE` / `SFNT_VERSION_CFF` | `0x00010000` / `OTTO` — the two flavours `build_sfnt` emits |
 
 ### Per-table rewriters (public submodules)
 
@@ -134,15 +188,18 @@ Each module exposes the rewriter used by the pipeline; they are public so advanc
 | Method | Description |
 |--------|-------------|
 | `PdfFontSubsetter::new(font_data, opts)` | New accumulator with explicit `SubsetOptions` |
-| `PdfFontSubsetter::for_pdf(font_data)` | Preset matching `subset_font_for_pdf` |
-| `PdfFontSubsetter::for_web(font_data)` | Preset matching `subset_font_for_web` |
+| `PdfFontSubsetter::new_at_face(font_data, face_index, opts)` | As above, subsetting one face of a `ttcf` collection |
+| `PdfFontSubsetter::for_pdf(font_data)` / `::for_pdf_at_face(font_data, face_index)` | Preset matching `subset_font_for_pdf` |
+| `PdfFontSubsetter::for_web(font_data)` / `::for_web_at_face(font_data, face_index)` | Preset matching `subset_font_for_web` |
+| `.face_index() -> u32` | The face this accumulator will subset |
 | `.add_codepoint(char)` / `.add_text(&str)` | Accumulate Unicode codepoints (resolved via `cmap` at `finalize`) |
 | `.add_gid(u16)` / `.add_gids(&[u16])` | Accumulate raw GIDs directly, bypassing `cmap` (PDF Type3/CID workflows) |
 | `.codepoint_count()` / `.gid_count()` / `.is_empty()` | Inspect accumulated state |
 | `.codepoints() -> &BTreeSet<char>` / `.raw_gids() -> &BTreeSet<u16>` | Borrow the accumulated sets |
 | `.merge(&mut other)` | Fold another accumulator's codepoints/GIDs into `self`, resetting `other` |
 | `.finalize() -> Result<(Vec<u8>, SubsetStats), SubsetError>` | Resolve accumulated state through the standard subsetting pipeline |
-| `.finalize_into_result() -> Result<PdfSubsetResult, SubsetError>` | `finalize`, wrapped into a `{ bytes, stats }` struct |
+| `.finalize_mapped() -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError>` | `finalize` plus the old ↔ new glyph-ID map (the CIDs to emit) |
+| `.finalize_into_result() -> Result<PdfSubsetResult, SubsetError>` | `finalize_mapped`, wrapped into a `{ bytes, stats, gid_map }` struct |
 | `.into_finalized() -> Result<(Vec<u8>, Vec<u8>, SubsetStats), SubsetError>` | Consumes `self`; returns `(original_font_data, subset_bytes, stats)` |
 | `.reset()` | Clear accumulated codepoints/GIDs, keeping `font_data`/`opts` for reuse |
 
@@ -158,8 +215,9 @@ Each module exposes the rewriter used by the pipeline; they are public so advanc
 
 | `SubsetError` variant | Cause |
 |-----------------------|-------|
-| `InvalidFont(String)` | Structurally invalid font data (truncated header, malformed sub-table, …), or a requested subset whose format-4 `cmap` sub-table would exceed the ~8189-segment addressable size |
+| `InvalidFont(String)` | Structurally invalid font data (truncated header, malformed sub-table, a `ttcf` container handed to a non-`_at_face` entry point, …), or a requested subset whose format-4 `cmap` sub-table would exceed the ~8189-segment addressable size |
 | `TableMissing([u8; 4])` | A required table (`cmap`, `glyf`, `loca`, `head`, `hhea`, `hmtx`, …) is absent |
+| `FaceIndexOutOfRange { index, count }` | A `face_index` at or beyond `face_count(data)` |
 | `Io(std::io::Error)` | I/O error (file paths / tests); implements `From<std::io::Error>` |
 
 ## Cross-references

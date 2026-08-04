@@ -11,9 +11,11 @@
 // Embedded fixture (same as used in fixture_tests.rs)
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 static TTF_FIXTURE: &[u8] = include_bytes!("../../oxifont-parser/tests/fixtures/test.ttf");
 
 /// Build a unique temp directory path for this test run.
+#[cfg(unix)]
 fn unique_tmp_dir(tag: &str) -> std::path::PathBuf {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -26,6 +28,7 @@ fn unique_tmp_dir(tag: &str) -> std::path::PathBuf {
 }
 
 /// Remove the temp directory, ignoring errors (best-effort cleanup).
+#[cfg(unix)]
 fn cleanup(dir: &std::path::Path) {
     let _ = std::fs::remove_dir_all(dir);
 }

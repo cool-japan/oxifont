@@ -49,7 +49,7 @@ fn make_variable_wght(family: &str, wght_min: f32, wght_max: f32) -> FaceInfo {
     FaceInfo {
         weight: 400,
         variable_axes: vec![VariationAxis {
-            tag: [b'w', b'g', b'h', b't'],
+            tag: *b"wght",
             min_value: wght_min,
             max_value: wght_max,
             default_value: 400.0,
@@ -65,14 +65,14 @@ fn make_variable_ital(family: &str, ital_max: f32) -> FaceInfo {
         italic: true,
         variable_axes: vec![
             VariationAxis {
-                tag: [b'w', b'g', b'h', b't'],
+                tag: *b"wght",
                 min_value: 100.0,
                 max_value: 900.0,
                 default_value: 400.0,
                 name: String::new(),
             },
             VariationAxis {
-                tag: [b'i', b't', b'a', b'l'],
+                tag: *b"ital",
                 min_value: 0.0,
                 max_value: ital_max,
                 default_value: 0.0,
@@ -373,7 +373,7 @@ fn test_variable_font_preferred_for_italic() {
     let has_ital_axis = face
         .variable_axes
         .iter()
-        .any(|ax| ax.tag == [b'i', b't', b'a', b'l'] && ax.max_value >= 1.0);
+        .any(|ax| ax.tag == *b"ital" && ax.max_value >= 1.0);
     assert!(
         has_ital_axis,
         "variable font with ital axis (max=1.0) must be preferred over static italic for \

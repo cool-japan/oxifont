@@ -10,8 +10,10 @@
 //! - Type 2: MultipleSubst (Format 1)
 //! - Type 3: AlternateSubst (Format 1)
 //! - Type 4: LigatureSubst (Format 1)
-//! - Type 5: ContextSubst (Formats 1, 2 and 3) — see [`crate::otl_context`]
-//! - Type 6: ChainContextSubst (Formats 1, 2 and 3) — see [`crate::otl_context`]
+//! - Type 5: ContextSubst (Formats 1, 2 and 3) — see the crate-internal
+//!   `otl_context` module
+//! - Type 6: ChainContextSubst (Formats 1, 2 and 3) — see the crate-internal
+//!   `otl_context` module
 //! - Type 7: ExtensionSubst (Format 1) — recursively rewrites the inner subtype,
 //!   including contextual inner types
 //! - Type 8: ReverseChainSingleSubst (Format 1)

@@ -1,0 +1,27 @@
+[package]
+name = "oxifont-hinting-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+oxifont-hinting = { path = ".." }
+oxifont-core = { path = "../../oxifont-core" }
+
+[[bin]]
+name = "fuzz_hint_glyph"
+path = "fuzz_targets/fuzz_hint_glyph.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_glyph_points"
+path = "fuzz_targets/fuzz_glyph_points.rs"
+test = false
+doc = false

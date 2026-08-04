@@ -1,8 +1,9 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-// Partial no_std stub: full compliance requires alloc imports for String/Vec/Arc
-// and core::fmt + core::error instead of std::*. FaceInfo.path: PathBuf is the
-// remaining pinch point — gating it requires a larger refactor (deferred).
+// `no_std`-compatible when the `std` feature is disabled: `String`/`Vec`/`Arc`
+// come from `alloc`, errors use `core::fmt`, and the only `std`-specific data —
+// `FaceInfo.path: PathBuf` and the `platform_dirs` module — is gated behind the
+// `std` feature. `cargo build -p oxifont-core --no-default-features` compiles.
 #![cfg_attr(not(feature = "std"), no_std)]
 
 //! `oxifont-core` — shared types and traits for the OxiFont ecosystem.

@@ -40,6 +40,8 @@ pub mod math;
 pub mod os2;
 /// OpenType Layout (OTL) table rewriters: GSUB.
 pub mod otl;
+/// Contextual / chaining-contextual lookup subtables shared by GSUB and GPOS.
+pub(crate) mod otl_context;
 /// OpenType Layout GPOS table rewriter.
 pub mod otl_gpos;
 /// On-the-fly font subsetting for PDF text rendering pipelines.
@@ -83,10 +85,22 @@ pub struct SubsetOptions {
     /// Useful for web fonts where hinting is rarely beneficial.
     pub strip_hints: bool,
 
-    /// Keep `GSUB`, `GPOS`, and `GDEF` tables verbatim.
+    /// Keep the `GSUB`, `GPOS`, and `GDEF` tables, with glyph ID references
+    /// remapped to the subset's new GID space (not copied verbatim — stale
+    /// GIDs would corrupt shaping).
     ///
-    /// Set to `false` if you want to strip layout tables (reduces file size
-    /// but disables OpenType shaping features).
+    /// Every GSUB lookup type (1–8) and GPOS lookup type (1–9) is remapped and
+    /// retained, including contextual / chaining lookups in all three formats
+    /// and their Extension-wrapped forms. A subtable is dropped only when it is
+    /// malformed or can no longer match anything under the subset (for example
+    /// a context whose input coverage emptied out); see
+    /// [`SubsetStats::dropped_context_subtables`] to detect the latter.
+    ///
+    /// Still not rewritten: GSUB/GPOS v1.1 `FeatureVariations`, which is
+    /// dropped along with the minor version (the rebuilt table is v1.0).
+    ///
+    /// Set to `false` if you want to strip layout tables entirely (reduces
+    /// file size but disables OpenType shaping features).
     pub retain_layout_tables: bool,
 
     /// Keep the full `name` table.
@@ -121,7 +135,10 @@ impl SubsetOptions {
         self
     }
 
-    /// Set whether layout tables (`GSUB`, `GPOS`, `GDEF`) are retained.
+    /// Set whether layout tables (`GSUB`, `GPOS`, `GDEF`) are retained (with
+    /// GID references remapped) rather than dropped entirely. See
+    /// [`SubsetOptions::retain_layout_tables`] for exactly what is remapped and
+    /// what is not.
     #[must_use]
     pub fn retain_layout_tables(mut self, v: bool) -> Self {
         self.retain_layout_tables = v;
@@ -161,6 +178,22 @@ pub struct SubsetStats {
     pub glyphs_retained: u16,
     /// 4-byte tags of all tables present in the subset font.
     pub tables_retained: Vec<[u8; 4]>,
+    /// Number of advanced-layout subtables dropped during GSUB/GPOS rewriting:
+    /// GSUB types 5, 6 and 8 and GPOS types 3, 5, 7 and 8.
+    ///
+    /// All three contextual formats (glyph rule sets, class rule sets and
+    /// coverage-based) are remapped, so a non-zero count no longer means an
+    /// unsupported format was skipped. It means the subtable either was
+    /// malformed or can no longer match anything under this subset — e.g. a
+    /// context position whose coverage emptied out, or a cursive / mark
+    /// attachment whose glyphs all left the subset. Those are legitimate
+    /// prunes; the counter exists so callers can notice how much contextual
+    /// machinery their glyph set discarded.
+    ///
+    /// Extension-wrapped lookups (GSUB 7 / GPOS 9) are counted under the outer
+    /// Extension type, which is not in the list above, so a dropped
+    /// Extension-wrapped context is not reflected here.
+    pub dropped_context_subtables: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -841,6 +874,11 @@ pub fn subset_with_gid_set(
     // the input `font_data`). Rewritten tables use `Cow::Owned`.
     let mut output_tables: Vec<([u8; 4], Cow<'_, [u8]>)> = Vec::with_capacity(25);
 
+    // Count of advanced GSUB/GPOS subtables dropped during layout rewriting
+    // (malformed, or no longer able to match under this subset) — surfaced in
+    // [`SubsetStats`] so callers can see how much contextual machinery went.
+    let mut dropped_context_subtables = 0usize;
+
     // Verbatim pass-through tags (copy if present, subject to options).
     // Tags for hint tables — omitted when strip_hints=true.
     let hint_tags: &[&[u8; 4]] = &[b"fpgm", b"prep", b"cvt "];
@@ -901,6 +939,19 @@ pub fn subset_with_gid_set(
     #[cfg(feature = "parallel")]
     {
         use rayon::prelude::*;
+
+        // Dropped-context accounting for the parallel path. The rewrite is a
+        // pure function of (table bytes, gid_remap), so computing the count here
+        // (rather than threading it through the task closures) keeps the task
+        // machinery unchanged; it only touches the two layout tables.
+        if opts.retain_layout_tables {
+            if let Some(&data) = orig_tables.get(b"GSUB") {
+                dropped_context_subtables += otl::rewrite_gsub_counted(data, &gid_remap).1;
+            }
+            if let Some(&data) = orig_tables.get(b"GPOS") {
+                dropped_context_subtables += otl_gpos::rewrite_gpos_counted(data, &gid_remap).1;
+            }
+        }
 
         // Each task returns zero, one, or two tagged table entries.
         // `Err` propagates from fallible rewriters (HVAR, VVAR) so that a
@@ -1111,17 +1162,18 @@ pub fn subset_with_gid_set(
         // GSUB: rewrite GID references (SFL chain + subtables) when retain_layout_tables is true.
         if opts.retain_layout_tables {
             if let Some(&data) = orig_tables.get(b"GSUB") {
-                output_tables.push((*b"GSUB", Cow::Owned(otl::rewrite_gsub(data, &gid_remap))));
+                let (bytes, dropped) = otl::rewrite_gsub_counted(data, &gid_remap);
+                dropped_context_subtables += dropped;
+                output_tables.push((*b"GSUB", Cow::Owned(bytes)));
             }
         }
 
         // GPOS: rewrite GID references (SFL chain + subtables) when retain_layout_tables is true.
         if opts.retain_layout_tables {
             if let Some(&data) = orig_tables.get(b"GPOS") {
-                output_tables.push((
-                    *b"GPOS",
-                    Cow::Owned(otl_gpos::rewrite_gpos(data, &gid_remap)),
-                ));
+                let (bytes, dropped) = otl_gpos::rewrite_gpos_counted(data, &gid_remap);
+                dropped_context_subtables += dropped;
+                output_tables.push((*b"GPOS", Cow::Owned(bytes)));
             }
         }
 
@@ -1257,6 +1309,7 @@ pub fn subset_with_gid_set(
         subset_size,
         glyphs_retained: new_glyph_count,
         tables_retained,
+        dropped_context_subtables,
     };
 
     Ok((subset_bytes, stats))

@@ -42,7 +42,7 @@ TrueType bytecode hinting execution (grid-fitting VM).
 - [x] oxifont-adapter-native: CoreText (macOS) with weight mapping, symbolic traits, font path extraction
 - [x] oxifont-adapter-native: DirectWrite (Windows) with COM enumeration, local font file loader, localized strings
 
-### M5 (In Progress)
+### M5 (Complete)
 - [x] CFF/CFF2 outline subsetting in oxifont-subset (~500 SLOC)
 - [x] GSUB/GPOS table subsetting: prune lookups for removed GIDs (~450 SLOC)
 - [x] gvar per-glyph variation tuple subsetting for variable fonts (~150 SLOC)

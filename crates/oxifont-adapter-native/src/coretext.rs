@@ -450,6 +450,66 @@ impl NativeCatalog {
 }
 
 // ---------------------------------------------------------------------------
+// oxifont-db bridge (feature = "db")
+// ---------------------------------------------------------------------------
+//
+// Mirrors the `into_db()`/`as_db()` bridge that `oxifont-adapter-pure`
+// provides, using the same `From<oxifont_core::FaceInfo> for
+// oxifont_db::FaceInfo` conversion from `oxifont-db/src/bridge.rs`. This is
+// the ergonomic route from CoreText enumeration to CSS Level 4 querying now
+// that the facade's `native` feature has been removed (0.2.0).
+
+#[cfg(feature = "db")]
+impl NativeCatalog {
+    /// Converts this catalog into an [`oxifont_db::FontDatabase`], enabling
+    /// full CSS Fonts Level 4 query access via [`oxifont_db::Query`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use oxifont_adapter_native::NativeCatalog;
+    /// use oxifont_db::Query;
+    ///
+    /// let native = NativeCatalog::load().unwrap();
+    /// let db = native.into_db();
+    /// if let Some(face) = Query::new(&db).family("sans-serif").weight(700).match_best() {
+    ///     println!("CSS match: {} weight={}", face.family, face.weight);
+    /// }
+    /// ```
+    pub fn into_db(self) -> oxifont_db::FontDatabase {
+        let mut db = oxifont_db::FontDatabase::new();
+        for face in self.faces {
+            db.add_face(oxifont_db::FaceInfo::from(face));
+        }
+        db
+    }
+
+    /// Produces an [`oxifont_db::FontDatabase`] from a reference to this
+    /// catalog, cloning each face record during conversion.
+    ///
+    /// Prefer [`NativeCatalog::into_db`] when this catalog is no longer
+    /// needed after the conversion.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use oxifont_adapter_native::NativeCatalog;
+    ///
+    /// let native = NativeCatalog::load().unwrap();
+    /// let db = native.as_db();
+    /// // `native` remains usable.
+    /// println!("{} faces in CSS db", db.stats().face_count);
+    /// ```
+    pub fn as_db(&self) -> oxifont_db::FontDatabase {
+        let mut db = oxifont_db::FontDatabase::new();
+        for face in &self.faces {
+            db.add_face(oxifont_db::FaceInfo::from(face));
+        }
+        db
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FontCatalog impl
 // ---------------------------------------------------------------------------
 

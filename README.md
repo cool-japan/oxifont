@@ -26,11 +26,12 @@ Full implementation across all M0–M7 milestones. 11 crates, ~34 500 Rust SLOC,
 | `woff1` | no | WOFF1 decode and encode |
 | `woff2` | no | WOFF2 decode and encode |
 | `subset` | no | Glyph subsetting (`subset_font`, `SubsetOptions`) |
+| `hinting` | no | TrueType bytecode hinting (`hinting::HintingEngine`, `hinted_outline`) |
 | `bundled-noto` | no | Embedded Noto Sans/Serif Latin/Greek/Cyrillic |
-| `bundled-noto-cjk-jp` | no | Embedded Noto Sans JP |
-| `bundled-noto-cjk-kr` | no | Embedded Noto Sans KR |
-| `bundled-noto-cjk-sc` | no | Embedded Noto Sans SC |
-| `bundled-noto-cjk-tc` | no | Embedded Noto Sans TC |
+| `bundled-noto-cjk-jp` | no | Noto Sans JP — opt-in, build-time-supplied (not embedded; see [Bundling CJK fonts](crates/oxifont-bundled/README.md#bundling-cjk-fonts)) |
+| `bundled-noto-cjk-kr` | no | Noto Sans KR — opt-in, build-time-supplied (not embedded; see [Bundling CJK fonts](crates/oxifont-bundled/README.md#bundling-cjk-fonts)) |
+| `bundled-noto-cjk-sc` | no | Noto Sans SC — opt-in, build-time-supplied (not embedded; see [Bundling CJK fonts](crates/oxifont-bundled/README.md#bundling-cjk-fonts)) |
+| `bundled-noto-cjk-tc` | no | Noto Sans TC — opt-in, build-time-supplied (not embedded; see [Bundling CJK fonts](crates/oxifont-bundled/README.md#bundling-cjk-fonts)) |
 
 ## Quick Start
 
@@ -121,19 +122,20 @@ oxifont (facade)
 ├── oxifont-db             (CSS query engine)         [db feature]
 ├── oxifont-subset         (subsetter)                [subset feature]
 ├── oxifont-webfont        (WOFF1/WOFF2)              [woff1/woff2 features]
+├── oxifont-hinting        (TrueType hinting VM)      [hinting feature]
 └── oxifont-bundled        (embedded Noto fonts)      [bundled-* features]
 
 oxifont-adapter-native (CoreText / DirectWrite)       [depend on directly; native feature]
-oxifont-hinting (TrueType bytecode hinting VM)        [depend on directly; not re-exported]
 ```
 
 All default features use **zero FFI**. Native platform APIs (CoreText, DirectWrite)
 are exposed through `oxifont-adapter-native`, which is no longer re-exported by
 the facade crate; depend on it directly and enable its `native` feature. TrueType
 hinting bytecode execution is provided by `oxifont-hinting` (depends only on
-`oxifont-core`), which is likewise not re-exported by the facade — depend on it
-directly. `fontconfig` and `freetype` are permanently off-limits under any feature
-or adapter.
+`oxifont-core`); the facade re-exports it as the `oxifont::hinting` module (plus
+the `oxifont::hinted_outline` convenience function) behind the `hinting` feature,
+or it can still be depended on directly for the full engine API. `fontconfig` and
+`freetype` are permanently off-limits under any feature or adapter.
 
 ## Replaces
 

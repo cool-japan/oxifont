@@ -1,19 +1,19 @@
 # oxifont-subset TODO
 
 ## Status
-Pure Rust OpenType font subsetter. Takes SFNT bytes + codepoints/glyph IDs, produces minimal SFNT. Handles TrueType (glyf/loca) and CFF/CFF2 outline formats. Rewrites: cmap (format 4/12; the format-4 builder is segment-count-checked and returns a typed `SubsetError::InvalidFont` instead of overflowing on subsets beyond the ~8189-segment addressable size), hmtx/vmtx, maxp, head, hhea/vhea, post v3, name, OS/2, kern. Layout: GSUB/GPOS/GDEF subtable rewriting with coverage and classdef remapping. Color: COLR/CPAL, CBDT/CBLC, SVG, sbix, MATH. Variable: gvar per-glyph tuple subsetting, HVAR/VVAR, fvar/avar. High-level entry points: `subset_font`, `subset_font_with_options`, `subset_by_gids`, `subset_font_for_web`, `subset_font_for_pdf`, `PdfFontSubsetter` builder. Optional `parallel` feature (rayon). ~5800 SLOC, 42 public items, 0 stubs. M5–M6 subsetting complete. `cargo nextest run -p oxifont-subset --all-features`: 129 passed, 0 skipped, 0 failed.
+Pure Rust OpenType font subsetter. Takes SFNT bytes + codepoints/glyph IDs, produces minimal SFNT. Handles TrueType (glyf/loca) and CFF/CFF2 outline formats. Rewrites: cmap (format 4/12; the format-4 builder is segment-count-checked and returns a typed `SubsetError::InvalidFont` instead of overflowing on subsets beyond the ~8189-segment addressable size), hmtx/vmtx, maxp, head, hhea/vhea, post v3, name, OS/2, kern. Layout: GSUB/GPOS/GDEF subtable rewriting with coverage and classdef remapping — every GSUB lookup type (1–8) and GPOS lookup type (1–9) is remapped, including contextual/chaining lookups in all three formats and their Extension-wrapped forms; a subtable is dropped only when malformed or unable to match under the subset (counted in `SubsetStats::dropped_context_subtables`). Color: COLR/CPAL, CBDT/CBLC, SVG, sbix, MATH. Variable: gvar per-glyph tuple subsetting, HVAR/VVAR, fvar/avar. High-level entry points: `subset_font`, `subset_font_with_options`, `subset_by_gids`, `subset_font_for_web`, `subset_font_for_pdf`, `PdfFontSubsetter` builder. Optional `parallel` feature (rayon). ~5800 SLOC, 42 public items, 0 stubs. M5–M6 subsetting complete. `cargo nextest run -p oxifont-subset --all-features`: 147 passed, 0 skipped, 0 failed.
 
 ## Core Implementation
 - [x] Implement CFF (Type 1) outline subsetting: parse CFF CharStrings, rebuild CFF header/INDEX/Top DICT/Private DICT for subset glyph set (~300 SLOC)
 - [x] Implement CFF2 outline subsetting with ItemVariationStore support (~200 SLOC)
 - [x] Rewrite GSUB table: prune lookups/features referencing removed GIDs, compact coverage tables (~250 SLOC)
   - **Goal:** Rewrite GSUB tables: remap GIDs in all lookup subtables, drop unhandled lookups, rebuild SFL chain. (planned 2026-05-25)
-  - **Design:** Common SFL rewriter in `src/layout.rs`. GSUB types 1-4,7; types 5,6,8 → safe-drop. Entry point: `rewrite_gsub(table, gid_remap) -> Vec<u8>`.
+  - **Design:** Common SFL rewriter in `src/layout.rs`. GSUB types 1–8 are all remapped: 1–4 directly, 5/6 (contextual, all three formats) via `src/otl_context.rs`, 7 (Extension) recursing into its inner type, 8 (ReverseChainSingleSubst) directly. Entry point: `rewrite_gsub(table, gid_remap) -> Vec<u8>`.
   - **Files:** `crates/oxifont-subset/src/layout.rs`, `src/lib.rs`.
   - **Tests:** `crates/oxifont-subset/tests/layout_gsub.rs`
 - [x] Rewrite GPOS table: prune PairPos/MarkBase/MarkLig lookups for removed GIDs (~200 SLOC)
   - **Goal:** Rewrite GPOS tables using the common SFL rewriter, adding GPOS-specific subtable handlers. (planned 2026-05-25)
-  - **Design:** GPOS types 1,2,4,6,9; types 3,5,7,8 → safe-drop. Entry point: `rewrite_gpos(table, gid_remap) -> Vec<u8>`.
+  - **Design:** GPOS types 1–9 are all remapped: 1/2/4/6 directly, 3 (CursivePos) and 5 (MarkLigPos) with anchor copying that preserves NULL anchors, 7/8 (contextual, all three formats) via `src/otl_context.rs`, 9 (Extension) recursing into its inner type. Entry point: `rewrite_gpos(table, gid_remap) -> Vec<u8>`.
   - **Files:** `crates/oxifont-subset/src/layout.rs` or `src/otl.rs`, `src/lib.rs`.
   - **Tests:** `crates/oxifont-subset/tests/layout_gpos.rs`
 - [x] Rewrite GDEF table: prune GlyphClassDef, AttachList, LigCaretList, MarkAttachClassDef for removed GIDs (~100 SLOC)

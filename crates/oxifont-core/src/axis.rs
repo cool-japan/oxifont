@@ -28,6 +28,8 @@ pub struct VariationAxis {
     pub default_value: f32,
     /// Maximum value for the axis.
     pub max_value: f32,
-    /// Human-readable axis name (from the `name` table, stringified name ID).
+    /// Human-readable axis name, resolved from the `name` table (preferring an
+    /// English Unicode record). Falls back to the numeric name ID rendered as a
+    /// string only when the `name` table has no matching record.
     pub name: alloc::string::String,
 }

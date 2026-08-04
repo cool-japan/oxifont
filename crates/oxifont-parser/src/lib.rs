@@ -131,11 +131,39 @@ fn extract_axes(face: &ttf_parser::Face<'_>) -> Vec<VariationAxis> {
             min_value: ax.min_value,
             default_value: ax.def_value,
             max_value: ax.max_value,
-            // name_id is a raw u16 that references the `name` table;
-            // stringify as the numeric ID for now (M1 scope).
-            name: ax.name_id.to_string(),
+            name: resolve_name_id(face, ax.name_id),
         })
         .collect()
+}
+
+/// Resolve a `name` table name ID to a human-readable string.
+///
+/// Prefers an English Unicode record (Windows LCID `0x0409` or a Unicode-platform
+/// record with language 0), falls back to any Unicode record with that ID, and
+/// finally to the numeric ID rendered as a string when the `name` table has no
+/// matching record.
+fn resolve_name_id(face: &ttf_parser::Face<'_>, name_id: u16) -> String {
+    if let Some(s) = face
+        .names()
+        .into_iter()
+        .find(|n| {
+            n.name_id == name_id
+                && n.is_unicode()
+                && (n.language_id == 0x0409 || n.language_id == 0)
+        })
+        .and_then(|n| n.to_string())
+    {
+        return s;
+    }
+    if let Some(s) = face
+        .names()
+        .into_iter()
+        .find(|n| n.name_id == name_id && n.is_unicode())
+        .and_then(|n| n.to_string())
+    {
+        return s;
+    }
+    name_id.to_string()
 }
 
 fn extract_postscript_name(face: &ttf_parser::Face<'_>) -> String {

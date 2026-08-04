@@ -135,8 +135,8 @@ pub fn scan_file(path: &Path) -> Result<Vec<FaceInfo>, FontError> {
 /// Scan a WOFF1 file.
 ///
 /// When the `woff1` feature is enabled the file is decoded to SFNT and all
-/// faces are parsed. Otherwise a single placeholder [`FaceInfo`] (path only)
-/// is returned.
+/// faces are parsed. Otherwise [`FontError::UnsupportedFormat`] is returned —
+/// the file format is recognised but this build cannot decode it.
 #[cfg(feature = "woff1")]
 fn scan_woff1_file(path: &Path) -> Result<Vec<FaceInfo>, FontError> {
     let raw = std::fs::read(path)?;
@@ -148,17 +148,18 @@ fn scan_woff1_file(path: &Path) -> Result<Vec<FaceInfo>, FontError> {
     Ok(faces)
 }
 
-/// WOFF1 placeholder path — the `woff1` feature is not compiled in.
+/// The `woff1` feature is not compiled in: report the file as unsupported
+/// rather than fabricating a placeholder [`FaceInfo`] with empty metadata.
 #[cfg(not(feature = "woff1"))]
-fn scan_woff1_file(path: &Path) -> Result<Vec<FaceInfo>, FontError> {
-    Ok(vec![woff_placeholder(path)])
+fn scan_woff1_file(_path: &Path) -> Result<Vec<FaceInfo>, FontError> {
+    Err(FontError::UnsupportedFormat)
 }
 
 /// Scan a WOFF2 file.
 ///
 /// When the `woff2` feature is enabled the file is decoded to SFNT and all
-/// faces are parsed. Otherwise a single placeholder [`FaceInfo`] (path only)
-/// is returned.
+/// faces are parsed. Otherwise [`FontError::UnsupportedFormat`] is returned —
+/// the file format is recognised but this build cannot decode it.
 #[cfg(feature = "woff2")]
 fn scan_woff2_file(path: &Path) -> Result<Vec<FaceInfo>, FontError> {
     let raw = std::fs::read(path)?;
@@ -170,27 +171,11 @@ fn scan_woff2_file(path: &Path) -> Result<Vec<FaceInfo>, FontError> {
     Ok(faces)
 }
 
-/// WOFF2 placeholder path — the `woff2` feature is not compiled in.
+/// The `woff2` feature is not compiled in: report the file as unsupported
+/// rather than fabricating a placeholder [`FaceInfo`] with empty metadata.
 #[cfg(not(feature = "woff2"))]
-fn scan_woff2_file(path: &Path) -> Result<Vec<FaceInfo>, FontError> {
-    Ok(vec![woff_placeholder(path)])
-}
-
-/// Build a minimal placeholder [`FaceInfo`] for a WOFF file that could not be
-/// decoded (feature not compiled in).
-#[cfg(any(not(feature = "woff1"), not(feature = "woff2")))]
-fn woff_placeholder(path: &Path) -> FaceInfo {
-    use oxifont_core::{FontStretch, FontStyle};
-    FaceInfo {
-        family: std::sync::Arc::from(""),
-        post_script_name: String::new(),
-        style: FontStyle::Normal,
-        weight: 400,
-        stretch: FontStretch::Normal,
-        path: path.to_path_buf(),
-        face_index: 0,
-        localized_families: Vec::new(),
-    }
+fn scan_woff2_file(_path: &Path) -> Result<Vec<FaceInfo>, FontError> {
+    Err(FontError::UnsupportedFormat)
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,17 +1161,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    #[cfg(any(not(feature = "woff1"), not(feature = "woff2")))]
+    #[cfg(not(feature = "woff1"))]
     #[test]
-    fn test_woff_placeholder_when_feature_disabled() {
-        // This test validates the placeholder path for systems where
-        // woff1/woff2 features may not be enabled. We test the helper
-        // function directly by calling woff_placeholder.
-        let p = PathBuf::from("/fake/path/font.woff");
-        let info = woff_placeholder(&p);
-        assert_eq!(info.path, p);
-        assert!(info.family.is_empty());
-        assert_eq!(info.face_index, 0);
+    fn test_scan_woff1_file_unsupported_when_feature_disabled() {
+        // When the `woff1` feature is not compiled in, scanning a `.woff`
+        // file must report `UnsupportedFormat` instead of fabricating a
+        // placeholder `FaceInfo` with empty family/PostScript metadata.
+        let p = PathBuf::from("font.woff");
+        let result = scan_woff1_file(&p);
+        assert!(
+            matches!(result, Err(FontError::UnsupportedFormat)),
+            "expected UnsupportedFormat, got {result:?}"
+        );
+    }
+
+    #[cfg(not(feature = "woff2"))]
+    #[test]
+    fn test_scan_woff2_file_unsupported_when_feature_disabled() {
+        // Same guarantee as above, for the `woff2` feature / `.woff2` files.
+        let p = PathBuf::from("font.woff2");
+        let result = scan_woff2_file(&p);
+        assert!(
+            matches!(result, Err(FontError::UnsupportedFormat)),
+            "expected UnsupportedFormat, got {result:?}"
+        );
     }
 
     #[test]

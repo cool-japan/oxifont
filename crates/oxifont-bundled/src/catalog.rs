@@ -49,7 +49,11 @@ pub struct BundledFont {
     ///
     /// The `OnceLock` is `const`-initialised to empty, so it is compatible with
     /// `pub static` declarations. Cloning a `BundledFont` resets the cache.
-    pub parsed: OnceLock<Arc<ParsedFace>>,
+    ///
+    /// Stores a `Result` (rather than a bare `Arc<ParsedFace>`) so that a
+    /// decompression/parse failure is cached and returned to the caller
+    /// instead of panicking; see [`parsed_face`](Self::parsed_face).
+    pub parsed: OnceLock<Result<Arc<ParsedFace>, FontError>>,
 }
 
 impl Clone for BundledFont {
@@ -191,18 +195,24 @@ impl BundledFont {
     /// Return a lazily-parsed [`ParsedFace`] wrapped in an [`Arc`], cached for
     /// the lifetime of this static instance.
     ///
-    /// On the first call the font bytes are (optionally) decompressed and parsed
-    /// into a `ParsedFace`; the result is stored inside this descriptor's
-    /// [`OnceLock`]. Subsequent calls clone the cached `Arc` without re-parsing.
+    /// On the first call the font bytes are (optionally) decompressed and
+    /// parsed into a `ParsedFace`; the outcome — `Ok` or `Err` — is stored
+    /// inside this descriptor's [`OnceLock`] and cloned out on every call, so
+    /// a decompression/parse failure is cached too: once a `BundledFont`
+    /// fails to parse it keeps returning the same `Err` on every subsequent
+    /// call rather than retrying.
     ///
-    /// Because the bundled font data is always valid (it is compiled into the
-    /// binary via `include_bytes!`), a parse failure is treated as a panic
-    /// rather than propagated as a `Result`. If you need graceful error handling
-    /// for untrusted data, use [`parse`](Self::parse) instead.
+    /// The bundled font data shipped by this crate is always valid (it is
+    /// compiled into the binary via `include_bytes!` and validated by
+    /// `build.rs`), so in practice this only ever returns `Err` for
+    /// synthetic `BundledFont` values built with deliberately invalid bytes
+    /// (e.g. in unit tests). Unlike earlier versions, a failure here never
+    /// panics.
     ///
     /// # Errors
-    /// Returns [`FontError::ParseError`] only when this `BundledFont` was
-    /// constructed with deliberately invalid bytes (e.g. in unit tests).
+    /// Returns [`FontError::ParseError`] if the embedded bytes are not a
+    /// valid TTF/OTF font, or if decompression fails (`compressed` feature
+    /// only).
     ///
     /// # Example
     /// ```ignore
@@ -215,14 +225,14 @@ impl BundledFont {
     /// assert!(Arc::ptr_eq(&a, &b), "same Arc returned on repeated call");
     /// ```
     pub fn parsed_face(&self) -> Result<Arc<ParsedFace>, FontError> {
-        let arc = self.parsed.get_or_init(|| {
-            let bytes = crate::compressed::decompress_font(self.data)
-                .unwrap_or_else(|e| panic!("bundled font decompression failed: {e}"));
-            let face = ParsedFace::parse(&*bytes, 0)
-                .unwrap_or_else(|e| panic!("bundled font parse failed: {e}"));
-            Arc::new(face)
-        });
-        Ok(arc.clone())
+        self.parsed
+            .get_or_init(|| {
+                let bytes = crate::compressed::decompress_font(self.data)?;
+                let face = ParsedFace::parse(&*bytes, 0)
+                    .map_err(|e| FontError::ParseError(e.to_string()))?;
+                Ok(Arc::new(face))
+            })
+            .clone()
     }
 
     /// Convert this descriptor into a [`FaceInfo`] record.

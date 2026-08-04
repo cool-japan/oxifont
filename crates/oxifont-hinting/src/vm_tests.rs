@@ -495,3 +495,149 @@ fn to_outline_produces_move_and_close() {
     assert!(matches!(outline.first(), Some(GlyphOutline::MoveTo { .. })));
     assert!(matches!(outline.last(), Some(GlyphOutline::Close)));
 }
+
+// ── Composite point-matched components ──────────────────────────────────────
+
+/// A composite glyph (gid 2) built from two copies of the triangle (gid 1):
+/// - component 1 placed at XY offset (0, 0),
+/// - component 2 placed by *point matching* — parent point 1 aligned with the
+///   component's point 0. Parent point 1 is the triangle's (100, 10); the
+///   component's point 0 is (10, 10), so the resolved delta is (90, 0).
+fn composite_point_match_glyph() -> Vec<u8> {
+    let mut g = Vec::new();
+    g.extend_from_slice(&(-1i16).to_be_bytes()); // numberOfContours = -1 (composite)
+    g.extend_from_slice(&10i16.to_be_bytes()); // xMin
+    g.extend_from_slice(&10i16.to_be_bytes()); // yMin
+    g.extend_from_slice(&190i16.to_be_bytes()); // xMax
+    g.extend_from_slice(&100i16.to_be_bytes()); // yMax
+
+    // Component 1: XY offset (0, 0), more components follow.
+    g.extend_from_slice(&(0x0002u16 | 0x0020u16).to_be_bytes()); // ARGS_ARE_XY_VALUES | MORE_COMPONENTS
+    g.extend_from_slice(&1u16.to_be_bytes()); // glyphIndex = 1
+    g.push(0); // arg1 = dx = 0 (i8)
+    g.push(0); // arg2 = dy = 0 (i8)
+
+    // Component 2: point match (ARGS_ARE_XY_VALUES clear), byte args, last one.
+    g.extend_from_slice(&0x0000u16.to_be_bytes()); // no flags
+    g.extend_from_slice(&1u16.to_be_bytes()); // glyphIndex = 1
+    g.push(1); // arg1 = parent point index 1
+    g.push(0); // arg2 = component point index 0
+    if g.len() % 2 != 0 {
+        g.push(0);
+    }
+    g
+}
+
+fn build_composite_font() -> Vec<u8> {
+    let mut head = vec![0u8; 54];
+    head[18..20].copy_from_slice(&1000u16.to_be_bytes()); // unitsPerEm; short loca.
+
+    let mut maxp = vec![0u8; 32];
+    maxp[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+    maxp[4..6].copy_from_slice(&3u16.to_be_bytes()); // numGlyphs = 3
+    maxp[16..18].copy_from_slice(&16u16.to_be_bytes());
+    maxp[24..26].copy_from_slice(&256u16.to_be_bytes());
+
+    let tri = triangle_glyph();
+    let composite = composite_point_match_glyph();
+    let mut glyf = Vec::new();
+    glyf.extend_from_slice(&tri); // gid 1
+    glyf.extend_from_slice(&composite); // gid 2
+
+    // loca (short): gid0 empty at 0, gid1 at 0, gid2 at tri end, gid3 (end).
+    let mut loca = Vec::new();
+    loca.extend_from_slice(&0u16.to_be_bytes()); // gid0
+    loca.extend_from_slice(&0u16.to_be_bytes()); // gid1
+    loca.extend_from_slice(&((tri.len() / 2) as u16).to_be_bytes()); // gid2
+    loca.extend_from_slice(&((glyf.len() / 2) as u16).to_be_bytes()); // gid3 end
+
+    let mut hhea = vec![0u8; 36];
+    hhea[34..36].copy_from_slice(&1u16.to_be_bytes());
+    let mut hmtx = Vec::new();
+    hmtx.extend_from_slice(&600u16.to_be_bytes());
+    hmtx.extend_from_slice(&0i16.to_be_bytes());
+
+    build_table_directory(&[
+        (b"head", head),
+        (b"maxp", maxp),
+        (b"loca", loca),
+        (b"glyf", glyf),
+        (b"hhea", hhea),
+        (b"hmtx", hmtx),
+    ])
+}
+
+#[test]
+fn composite_point_match_resolves_offset() {
+    use crate::font::FontProgram;
+    let font = build_composite_font();
+    let map = SfntTableMap::parse(&font).expect("composite font must parse");
+    let prog = FontProgram::load(&map).expect("font program must load");
+
+    let pts = prog
+        .glyph_points(2)
+        .expect("composite glyph must decode via point matching");
+
+    // Two triangles = 6 points.
+    assert_eq!(pts.num_points(), 6, "composite must have 6 points");
+    // Component 1 sits at (10,10),(100,10),(50,100).
+    assert_eq!((pts.xs[0], pts.ys[0]), (10, 10));
+    assert_eq!((pts.xs[1], pts.ys[1]), (100, 10));
+    // Component 2 point 0 must be aligned onto parent point 1 = (100, 10),
+    // i.e. NOT the old (10, 10) zero-offset placement.
+    assert_eq!(
+        (pts.xs[3], pts.ys[3]),
+        (100, 10),
+        "point-matched component must be shifted by the resolved (90, 0) delta"
+    );
+    assert_eq!((pts.xs[4], pts.ys[4]), (190, 10));
+    assert_eq!((pts.xs[5], pts.ys[5]), (140, 100));
+}
+
+#[test]
+fn composite_point_match_out_of_range_errs() {
+    use crate::font::FontProgram;
+    // Rebuild the composite but with an out-of-range parent point index.
+    let mut composite = composite_point_match_glyph();
+    // The second component's arg1 byte is the second-to-last content byte.
+    // Locate it: header(10) + comp1(6) + [flags(2)+gid(2)] = index 20.
+    composite[20] = 200; // parent point index 200 — out of range (only 3 exist)
+    let tri = triangle_glyph();
+    let mut glyf = Vec::new();
+    glyf.extend_from_slice(&tri);
+    glyf.extend_from_slice(&composite);
+
+    let mut head = vec![0u8; 54];
+    head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+    let mut maxp = vec![0u8; 32];
+    maxp[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+    maxp[4..6].copy_from_slice(&3u16.to_be_bytes());
+    maxp[16..18].copy_from_slice(&16u16.to_be_bytes());
+    maxp[24..26].copy_from_slice(&256u16.to_be_bytes());
+    let mut loca = Vec::new();
+    loca.extend_from_slice(&0u16.to_be_bytes());
+    loca.extend_from_slice(&0u16.to_be_bytes());
+    loca.extend_from_slice(&((tri.len() / 2) as u16).to_be_bytes());
+    loca.extend_from_slice(&((glyf.len() / 2) as u16).to_be_bytes());
+    let mut hhea = vec![0u8; 36];
+    hhea[34..36].copy_from_slice(&1u16.to_be_bytes());
+    let mut hmtx = Vec::new();
+    hmtx.extend_from_slice(&600u16.to_be_bytes());
+    hmtx.extend_from_slice(&0i16.to_be_bytes());
+    let font = build_table_directory(&[
+        (b"head", head),
+        (b"maxp", maxp),
+        (b"loca", loca),
+        (b"glyf", glyf),
+        (b"hhea", hhea),
+        (b"hmtx", hmtx),
+    ]);
+
+    let map = SfntTableMap::parse(&font).expect("font must parse");
+    let prog = FontProgram::load(&map).expect("font program must load");
+    let r = prog.glyph_points(2);
+    assert!(
+        matches!(r, Err(HintingError::MalformedTable { .. })),
+        "out-of-range point-match index must be a typed error, got {r:?}"
+    );
+}

@@ -375,16 +375,37 @@ impl FontProgram {
                 pos += 8;
             }
 
-            // We only resolve XY-value offsets; point-matched composites (rare)
-            // are assembled with a zero offset rather than failing.
+            let comp = self.decode_glyph(component_gid, depth + 1)?;
+            let base = out.xs.len();
+
+            // Resolve the component placement offset.
+            //
+            // With ARGS_ARE_XY_VALUES set, arg1/arg2 are a direct (x, y) delta
+            // in font units. Otherwise they are point indices: point `arg1` of
+            // the composite assembled so far must be aligned with point `arg2`
+            // of the incoming component, *after* the component's 2x2 transform
+            // is applied (matching FreeType's behaviour). Out-of-range indices
+            // are a malformed glyph rather than a silent zero offset.
             let (dx, dy) = if flags & ARGS_ARE_XY_VALUES != 0 {
                 (arg1, arg2)
             } else {
-                (0, 0)
+                let (parent_idx, comp_idx) = if flags & ARG_1_AND_2_ARE_WORDS != 0 {
+                    (arg1 as u16 as usize, arg2 as u16 as usize)
+                } else {
+                    (arg1 as u8 as usize, arg2 as u8 as usize)
+                };
+                if parent_idx >= base || comp_idx >= comp.num_points() {
+                    return Err(HintingError::MalformedTable {
+                        tag: *b"glyf",
+                        reason: "composite point-match index out of range",
+                    });
+                }
+                let cx = comp.xs[comp_idx];
+                let cy = comp.ys[comp_idx];
+                let tx = mul_2dot14(cx, xx) + mul_2dot14(cy, yx);
+                let ty = mul_2dot14(cx, xy) + mul_2dot14(cy, yy);
+                (out.xs[parent_idx] - tx, out.ys[parent_idx] - ty)
             };
-
-            let comp = self.decode_glyph(component_gid, depth + 1)?;
-            let base = out.xs.len();
             for i in 0..comp.num_points() {
                 let x = comp.xs[i];
                 let y = comp.ys[i];

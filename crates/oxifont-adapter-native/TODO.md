@@ -1,7 +1,7 @@
 # oxifont-adapter-native TODO
 
 ## Status
-OS-native font adapter using CoreText on macOS and DirectWrite on Windows. Falls back to `oxifont-adapter-pure::FontDatabase` on other platforms. CoreText adapter: 351 SLOC with weight mapping, family name extraction, style traits. DirectWrite adapter: 209 SLOC with COM interface handling, path extraction, localized string reading. Both implement `FontCatalog`. 45 tests passing.
+OS-native font adapter using CoreText on macOS and DirectWrite on Windows. Falls back to `oxifont-adapter-pure::FontDatabase` on other platforms. CoreText adapter: 351 SLOC with weight mapping, family name extraction, style traits. DirectWrite adapter: 209 SLOC with COM interface handling, path extraction, localized string reading. Both implement `FontCatalog`. 47 tests passing.
 
 ## Core Implementation
 - [x] CoreText: extract `FontStretch` (width) from CTFontSymbolicTraits (`kCTFontCondensedTrait` / `kCTFontExpandedTrait`) (~15 SLOC)

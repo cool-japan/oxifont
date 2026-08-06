@@ -5,7 +5,9 @@
 
 `oxifont` is the top-level facade for the OxiFont ecosystem: Pure-Rust font discovery, parsing, subsetting, and web-font encoding. A single dependency re-exports the most commonly needed items from the `oxifont-*` subcrates, with optional functionality gated behind feature flags. Every subcrate can also be used independently.
 
-Out of the box (`default = ["pure", "discovery"]`) you get filesystem font discovery and a CSS-aware [`FontDatabase`] — no native libraries, no FFI, no C/C++ dependencies. Opt-in features add a CSS Level 4 query engine, WOFF1/WOFF2 codecs, glyph subsetting, and compile-time bundled Noto fonts.
+Out of the box (`default = ["pure", "discovery"]`) you get filesystem font discovery and a CSS-aware [`FontDatabase`] — no native libraries, no FFI, no C/C++ dependencies. Opt-in features add a CSS Level 4 query engine, WOFF1/WOFF2 codecs, glyph subsetting, TrueType bytecode hinting, and compile-time bundled Noto fonts.
+
+Runnable end-to-end examples live in [`examples/`](examples/): `discover_query_match` (default features), `parse_metrics_outline`, `subset_woff2_roundtrip`, and `hinting_at_ppem`.
 
 ## Installation
 
@@ -77,6 +79,7 @@ re-exports the most commonly needed items under one dependency.
 | [`oxifont-db`](../oxifont-db) | In-memory indexed DB with CSS matching | `db` module *(feature `db`)* |
 | [`oxifont-subset`](../oxifont-subset) | TrueType/CFF glyph subsetting | `subset` module *(feature `subset`)* |
 | [`oxifont-webfont`](../oxifont-webfont) | WOFF1/WOFF2 encode & decode | `webfont` module *(features `woff1`/`woff2`)* |
+| [`oxifont-hinting`](../oxifont-hinting) | TrueType bytecode hinting (grid-fitting VM) | `hinting` module *(feature `hinting`)* |
 | [`oxifont-bundled`](../oxifont-bundled) | Compile-time embedded Noto fonts | `bundled` module *(feature `bundled-noto`)* |
 
 ## Feature Flags
@@ -89,6 +92,7 @@ re-exports the most commonly needed items under one dependency.
 | `woff1` | no | `webfont` module: WOFF1 encode/decode; enables WOFF1 in `decode_and_parse` |
 | `woff2` | no | `webfont` module: WOFF2 encode/decode; enables WOFF2 in `decode_and_parse` |
 | `subset` | no | `subset` module: glyph subsetting (with `woff2`, enables `subset_and_encode_woff2`) |
+| `hinting` | no | `hinting` module: `hinting::HintingEngine` TrueType bytecode hinting VM; enables `hinted_outline()` |
 | `bundled-noto` | no | `bundled` module: embedded Noto Sans/Serif/Mono bytes; enables `system_with_bundled()`, `bundled_fonts()` |
 | `bundled-noto-serif` | no | Embedded Noto Serif (implies `bundled-noto`) |
 | `bundled-noto-emoji` | no | Embedded Noto Emoji (implies `bundled-noto`) |
@@ -122,6 +126,7 @@ From [`oxifont-adapter-pure`](../oxifont-adapter-pure) *(feature `pure`)*: `Font
 | `system_with_bundled() -> bundled::provider::BundledFontProvider` | `bundled-noto` | A provider pre-loaded with the embedded Noto fonts |
 | `bundled_fonts() -> bundled::BundledCatalog` | `bundled-noto` | The built-in bundled font catalog |
 | `subset_and_encode_woff2(font_data, codepoints) -> Result<Vec<u8>, SubsetEncodeError>` | `subset` + `woff2` | Subset a font to the given chars, then encode as WOFF2 |
+| `hinted_outline(font_bytes, gid, ppem) -> Result<Vec<GlyphOutline>, hinting::HintingError>` | `hinting` | Grid-fit one glyph at one ppem and return the hinted outline |
 | `version() -> &'static str` | — | The `oxifont` crate version string |
 
 ### `FontFormat` (top level)
@@ -184,6 +189,27 @@ Re-exports everything from [`oxifont-webfont`](../oxifont-webfont): `decode_woff
 
 Re-exports everything from [`oxifont-subset`](../oxifont-subset), including
 `subset_font` and `SubsetError`.
+
+### `hinting` *(feature `hinting`)*
+
+Re-exports everything from [`oxifont-hinting`](../oxifont-hinting): `HintingEngine`,
+`HintedGlyph`, `HintingError`, and the fixed-point helpers. For a single glyph at a
+single size, the top-level `hinted_outline` wrapper is usually enough:
+
+```rust,no_run
+# #[cfg(feature = "hinting")]
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let font_bytes = std::fs::read("NotoSans-Bold.ttf")?;
+let outline = oxifont::hinted_outline(&font_bytes, 36, 16)?;
+println!("{} path commands", outline.len());
+# Ok(())
+# }
+# #[cfg(not(feature = "hinting"))]
+# fn main() {}
+```
+
+Hinting many glyphs at the same ppem should construct a `hinting::HintingEngine`
+directly — the wrapper re-runs `fpgm`/`prep` on every call.
 
 ### `bundled` *(feature `bundled-noto`)*
 

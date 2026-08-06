@@ -7,7 +7,7 @@ OxiFont adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [0.2.2] - Unreleased
+## [0.2.2] - 2026-08-06
 
 ### Added
 
@@ -35,6 +35,8 @@ OxiFont adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `oxifont-discovery`: scanning a `.woff`/`.woff2` file when the corresponding `woff1`/`woff2` feature is not compiled in now returns `FontError::UnsupportedFormat` instead of a fabricated placeholder `FaceInfo` with an empty family and PostScript name that was otherwise indistinguishable from a real 400-weight normal face.
 - `oxifont-adapter-native` (DirectWrite): a font face backed by more than one `IDWriteFontFile` (composite fonts) is now skipped during enumeration instead of being reported with only its first file's path — `FaceInfo::path` has no way to represent more than one file, so a partial path was silently misleading.
 - Root `Cargo.toml`: `quick-xml` now resolves to the `oxixml-quickxml-compat` package (via Cargo's `package = "…"` rename) instead of the upstream `quick-xml` crate; `deny.toml` gained a matching `bans` entry so the upstream crate cannot be pulled in by mistake.
+- `oxiarc-deflate` / `oxiarc-brotli` updated from 0.4.0 to 0.4.1; `quick-xml` (the `oxixml-quickxml-compat` package) 0.1.0 → 0.1.1.
+- `oxicode` updated from 0.2.5 to 0.2.6.
 
 ### Fixed
 

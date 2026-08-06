@@ -14,16 +14,16 @@ Runnable end-to-end examples live in [`examples/`](examples/): `discover_query_m
 ```toml
 [dependencies]
 # Default: pure-Rust filesystem discovery + FontDatabase
-oxifont = "0.2.2"
+oxifont = "0.2.3"
 
 # CSS Level 4 query engine
-oxifont = { version = "0.2.2", features = ["db"] }
+oxifont = { version = "0.2.3", features = ["db"] }
 
 # WOFF2 decode/encode + glyph subsetting pipeline
-oxifont = { version = "0.2.2", features = ["woff2", "subset"] }
+oxifont = { version = "0.2.3", features = ["woff2", "subset"] }
 
 # Bundled Noto fonts for environments without system fonts (WASM, CI, containers)
-oxifont = { version = "0.2.2", features = ["bundled-noto"] }
+oxifont = { version = "0.2.3", features = ["bundled-noto"] }
 ```
 
 ## Quick Start

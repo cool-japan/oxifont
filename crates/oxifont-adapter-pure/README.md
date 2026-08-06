@@ -11,10 +11,10 @@
 
 ```toml
 [dependencies]
-oxifont-adapter-pure = "0.2.2"
+oxifont-adapter-pure = "0.2.3"
 
 # With the on-disk JSON metadata cache:
-oxifont-adapter-pure = { version = "0.2.2", features = ["cache"] }
+oxifont-adapter-pure = { version = "0.2.3", features = ["cache"] }
 ```
 
 ## Quick Start

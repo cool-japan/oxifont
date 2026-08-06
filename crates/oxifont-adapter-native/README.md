@@ -23,7 +23,7 @@
 
 ```toml
 [dependencies]
-oxifont-adapter-native = "0.2.2"
+oxifont-adapter-native = "0.2.3"
 ```
 
 No Cargo features are required: the correct backend is selected automatically at

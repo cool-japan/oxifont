@@ -14,13 +14,13 @@ Decoding is defensive against malformed or hostile WOFF2 input: stream-length fi
 ```toml
 [dependencies]
 # WOFF2 only (brotli)
-oxifont-webfont = { version = "0.2.2", features = ["woff2"] }
+oxifont-webfont = { version = "0.2.3", features = ["woff2"] }
 
 # WOFF1 only (zlib)
-oxifont-webfont = { version = "0.2.2", features = ["woff1"] }
+oxifont-webfont = { version = "0.2.3", features = ["woff1"] }
 
 # Both
-oxifont-webfont = { version = "0.2.2", features = ["woff1", "woff2"] }
+oxifont-webfont = { version = "0.2.3", features = ["woff1", "woff2"] }
 ```
 
 Without any feature flag the crate still compiles and exposes the format-detection

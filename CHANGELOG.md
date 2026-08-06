@@ -7,6 +7,16 @@ OxiFont adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.2.3] - Unreleased
+
+### Added
+
+### Changed
+
+### Fixed
+
+---
+
 ## [0.2.2] - 2026-08-06
 
 ### Added

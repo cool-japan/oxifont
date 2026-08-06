@@ -12,7 +12,7 @@
 
 ```toml
 [dependencies]
-oxifont-hinting = "0.2.2"
+oxifont-hinting = "0.2.3"
 ```
 
 ## Quick Start

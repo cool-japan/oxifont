@@ -1,7 +1,7 @@
 # oxifont-bundled TODO
 
 ## Status
-v0.2.1 — 2026-07-30. `BundledFont` struct, `BundledCatalog`, `BundledFontProvider`. Features: `bundled-noto`, `-serif`, `-emoji`, `-cjk-{jp,kr,sc,tc}`, `compressed`. **Breaking (0.2.1)**: the CJK accessors are no longer zero-byte `pub static NOTO_SANS_{JP,KR,SC,TC}_REGULAR: &[u8]` placeholders — each `bundled-noto-cjk-{jp,kr,sc,tc}` feature now compiles a `noto_sans_<lang>_regular() -> Result<&'static [u8], oxifont_core::FontError>` function that reads a real, developer-supplied TTF staged at build time (`OXIFONT_NOTO_CJK_<LANG>` env var, or an in-tree `fonts/cjk-<lang>/NotoSans<LANG>-Regular.ttf` file), validated by `build.rs` as a genuine SFNT, returning `Err(FontError::NotFound)` — never empty/fake bytes — when none was supplied. 56 tests passing, 0 skipped, 0 failed, with `--all-features`. Zero clippy warnings.
+v0.2.2 — 2026-08-06. `BundledFont` struct, `BundledCatalog`, `BundledFontProvider`. Features: `bundled-noto`, `-serif`, `-emoji`, `-cjk-{jp,kr,sc,tc}`, `compressed`. **Breaking (0.2.1)**: the CJK accessors are no longer zero-byte `pub static NOTO_SANS_{JP,KR,SC,TC}_REGULAR: &[u8]` placeholders — each `bundled-noto-cjk-{jp,kr,sc,tc}` feature now compiles a `noto_sans_<lang>_regular() -> Result<&'static [u8], oxifont_core::FontError>` function that reads a real, developer-supplied TTF staged at build time (`OXIFONT_NOTO_CJK_<LANG>` env var, or an in-tree `fonts/cjk-<lang>/NotoSans<LANG>-Regular.ttf` file), validated by `build.rs` as a genuine SFNT, returning `Err(FontError::NotFound)` — never empty/fake bytes — when none was supplied. 56 tests passing, 0 skipped, 0 failed, with `--all-features`. Zero clippy warnings.
 
 ## Core Implementation
 - [x] Create `Cargo.toml` with `name = "oxifont-bundled"`, workspace version/edition/authors/license/repository, dependency on `oxifont-core`
@@ -66,8 +66,8 @@ v0.2.1 — 2026-07-30. `BundledFont` struct, `BundledCatalog`, `BundledFontProvi
   - NotoSerif-Regular.ttf: 482,540 bytes (471 KB) — `bundled-noto-serif` feature
   - NotoSansCJK-JP/SC/KR/TC: not vendored (~16 MB each) — `bundled-noto-cjk-*` features expose a `noto_sans_<lang>_regular()` accessor; the developer supplies the real font at build time via `OXIFONT_NOTO_CJK_<LANG>` or an in-tree `fonts/cjk-<lang>/` file. When absent the accessor returns a typed `FontError::NotFound` (never empty/fake). See README "Bundling CJK fonts".
   - Total with default `bundled-noto` (all 4 Latin fonts): ~5.0 MB before compression
-  - With `compressed` feature: fonts stored as oxiarc-deflate compressed blobs (build.rs compression deferred)
-- [x] Add `compressed` feature: store fonts as OxiARC-deflate compressed, decompress on first `parse()` to reduce binary size (~80 SLOC) — API implemented (`BundledFont::decompressed_data()`, `compressed::decompress_font()`); build.rs compression generation deferred
+  - With `compressed` feature: fonts stored as oxiarc-deflate compressed blobs (build.rs's `compress_latin_fonts()` zlib-compresses every top-level `fonts/*.ttf` at level 6 into `$OUT_DIR/<name>.ttf.z`, embedded and decompressed at runtime)
+- [x] Add `compressed` feature: store fonts as OxiARC-deflate compressed, decompress on first `parse()` to reduce binary size (~80 SLOC) — implemented end to end: `build.rs` generates the compressed blobs (`oxiarc_deflate::zlib_compress(&raw, 6)` into `$OUT_DIR/<name>.ttf.z`) and `catalog.rs`/`compressed.rs` embed + decompress them (`BundledFont::decompressed_data()`, `compressed::decompress_font()`)
 
 ## Integration
 - [x] Wire `BundledCatalog` into `oxifont` facade crate as fallback when system font discovery returns zero fonts (`system_fonts_with_bundled_fallback()` in oxifont/src/lib.rs)

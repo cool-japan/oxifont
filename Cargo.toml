@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.89"
 authors = ["COOLJAPAN OU (Team Kitasan)"]
@@ -24,18 +24,18 @@ repository = "https://github.com/cool-japan/oxifont"
 description = "OxiFont is the COOLJAPAN Pure Rust font discovery + font parsing layer for the oxi* ecosystem."
 
 [workspace.dependencies]
-oxifont-core        = { path = "crates/oxifont-core",        version = "0.2.1" }
-oxifont-parser      = { path = "crates/oxifont-parser",      version = "0.2.1" }
-oxifont-hinting     = { path = "crates/oxifont-hinting",     version = "0.2.1" }
-oxifont-discovery   = { path = "crates/oxifont-discovery",   version = "0.2.1" }
-oxifont-adapter-pure = { path = "crates/oxifont-adapter-pure", version = "0.2.1" }
-oxifont-db          = { path = "crates/oxifont-db",          version = "0.2.1" }
-oxifont-webfont        = { path = "crates/oxifont-webfont",        version = "0.2.1" }
-oxifont-subset         = { path = "crates/oxifont-subset",         version = "0.2.1" }
-oxifont-adapter-native = { path = "crates/oxifont-adapter-native", version = "0.2.1" }
-oxifont-bundled        = { path = "crates/oxifont-bundled",        version = "0.2.1" }
-oxiarc-deflate         = { version = "0.4.0" }
-oxiarc-brotli          = { version = "0.4.0" }
+oxifont-core        = { path = "crates/oxifont-core",        version = "0.2.2" }
+oxifont-parser      = { path = "crates/oxifont-parser",      version = "0.2.2" }
+oxifont-hinting     = { path = "crates/oxifont-hinting",     version = "0.2.2" }
+oxifont-discovery   = { path = "crates/oxifont-discovery",   version = "0.2.2" }
+oxifont-adapter-pure = { path = "crates/oxifont-adapter-pure", version = "0.2.2" }
+oxifont-db          = { path = "crates/oxifont-db",          version = "0.2.2" }
+oxifont-webfont        = { path = "crates/oxifont-webfont",        version = "0.2.2" }
+oxifont-subset         = { path = "crates/oxifont-subset",         version = "0.2.2" }
+oxifont-adapter-native = { path = "crates/oxifont-adapter-native", version = "0.2.2" }
+oxifont-bundled        = { path = "crates/oxifont-bundled",        version = "0.2.2" }
+oxiarc-deflate         = { version = "0.4.1" }
+oxiarc-brotli          = { version = "0.4.1" }
 
 core-foundation = { version = "0.10.1" }
 core-text       = { version = "22.0.0" }
@@ -54,8 +54,8 @@ walkdir      = { version = "2.5.0" }
 rayon        = { version = "1.12.0" }
 serde        = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json   = { version = "1.0.150" }
-quick-xml    = { version = "0.41.0" }
+quick-xml    = { package = "oxixml-quickxml-compat", version = "0.1.1" }
 memmap2      = { version = "0.9.11" }
-oxicode      = { version = "0.2.5", features = ["serde"] }
+oxicode      = { version = "0.2.6", features = ["serde"] }
 proptest     = { version = "1.11.0" }
 criterion      = { version = "0.8", default-features = false }

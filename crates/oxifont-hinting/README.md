@@ -12,7 +12,7 @@
 
 ```toml
 [dependencies]
-oxifont-hinting = "0.2.1"
+oxifont-hinting = "0.2.2"
 ```
 
 ## Quick Start
@@ -149,7 +149,7 @@ The VM **never panics** on malformed or hostile bytecode. Every stack, storage, 
 
 ## Status
 
-New crate for the 0.2.1 release, so it's marked **Alpha** while its API sees real-world use — but it is thoroughly tested: 58 passing tests including a real-font integration suite (`tests/real_fonts.rs`) that runs the VM across bundled Noto fonts at multiple sizes and stress-tests an entire glyph set, plus 1 passing doctest. It is **not yet re-exported from the [`oxifont`](../..) facade crate** or depended on by any other workspace member — depend on `oxifont-hinting` directly for now.
+New crate for the 0.2.1 release, so it's marked **Alpha** while its API sees real-world use — but it is thoroughly tested: 60 passing tests including a real-font integration suite (`tests/real_fonts.rs`) that runs the VM across bundled Noto fonts at multiple sizes and stress-tests an entire glyph set, plus 1 passing doctest. Since 0.2.2 the [`oxifont`](../oxifont) facade re-exports this crate as `oxifont::hinting` behind its `hinting` feature (along with the `oxifont::hinted_outline` one-shot convenience wrapper); depend on `oxifont-hinting` directly for the full engine API.
 
 ## Testing
 
@@ -157,14 +157,14 @@ New crate for the 0.2.1 release, so it's marked **Alpha** while its API sees rea
 cargo nextest run -p oxifont-hinting --all-features
 ```
 
-58 tests passing, 0 failed, 0 skipped: fixed-point math and rounding-mode unit tests, instruction-stream navigation tests, opcode-level VM tests, and an integration suite that grid-fits real bundled Noto Sans fonts (both hinted and unhinted) across multiple ppem sizes, checks fitting is deterministic, confirms hinting actually snaps points to the pixel grid, verifies `to_outline()` shape consistency, and stress-runs every glyph in a font with "no panic, bounded output" as the only assertion. Plus 1 passing doctest (the crate's own `lib.rs` example).
+60 tests passing, 0 failed, 0 skipped: fixed-point math and rounding-mode unit tests, instruction-stream navigation tests, opcode-level VM tests, and an integration suite that grid-fits real bundled Noto Sans fonts (both hinted and unhinted) across multiple ppem sizes, checks fitting is deterministic, confirms hinting actually snaps points to the pixel grid, verifies `to_outline()` shape consistency, and stress-runs every glyph in a font with "no panic, bounded output" as the only assertion. Plus 1 passing doctest (the crate's own `lib.rs` example).
 
 ## Cross-references
 
 - [`oxifont-core`](../oxifont-core) — `SfntTableMap` (input) and `GlyphOutline` (the path-command type `to_outline()` produces)
 - [`oxifont-parser`](../oxifont-parser) — typical source of the raw font bytes fed to `SfntTableMap::parse`; also a dev-dependency of this crate's test suite
 - [`oxifont-bundled`](../oxifont-bundled) — supplies the real Noto fonts used by `tests/real_fonts.rs` (`bundled-noto` feature, dev-dependency only)
-- [`oxifont`](../..) — the top-level façade crate; does not yet re-export this crate
+- [`oxifont`](../oxifont) — the top-level façade crate; re-exports this crate as `oxifont::hinting` behind its `hinting` feature (since 0.2.2), plus the `oxifont::hinted_outline` one-shot wrapper
 
 ## License
 

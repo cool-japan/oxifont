@@ -19,16 +19,21 @@ fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
 // ─── internal result type ────────────────────────────────────────────────────
 
 /// Everything parsed from a valid gvar header.
-struct GvarHeader {
-    axis_count: u16,
-    shared_tuple_count: u16,
-    shared_tuples_offset: usize,
-    glyph_count: u16,
-    long_offsets: bool,
-    glyph_var_data_array_offset: usize,
+pub(crate) struct GvarHeader {
+    pub(crate) axis_count: u16,
+    pub(crate) shared_tuple_count: u16,
+    pub(crate) shared_tuples_offset: usize,
+    pub(crate) glyph_count: u16,
+    pub(crate) long_offsets: bool,
+    pub(crate) glyph_var_data_array_offset: usize,
 }
 
-fn parse_header(table: &[u8]) -> Option<GvarHeader> {
+/// Parse and validate the fixed 20-byte `gvar` header.
+///
+/// `None` for a table shorter than the header or carrying a version other than
+/// 1.0 — the caller decides whether that is fatal (the instancer) or a reason to
+/// pass the table through verbatim (the subsetter).
+pub(crate) fn parse_header(table: &[u8]) -> Option<GvarHeader> {
     if table.len() < 20 {
         return None;
     }
@@ -57,7 +62,7 @@ fn parse_header(table: &[u8]) -> Option<GvarHeader> {
 
 /// Parse the offset table from a gvar.  Returns absolute byte offsets from the
 /// start of the table (converted from relative-to-`glyph_var_data_array_offset`).
-fn parse_offsets(table: &[u8], hdr: &GvarHeader) -> Option<Vec<usize>> {
+pub(crate) fn parse_offsets(table: &[u8], hdr: &GvarHeader) -> Option<Vec<usize>> {
     let entry_count = hdr.glyph_count as usize + 1;
     let base = hdr.glyph_var_data_array_offset;
 

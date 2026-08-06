@@ -7,6 +7,7 @@ deny = [
     { name = "flate2" },
     { name = "miniz_oxide" },
     { name = "ring" },
+    { name = "quick-xml", use-instead = "oxixml-xml" },
 ]
 
 [licenses]

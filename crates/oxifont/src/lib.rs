@@ -18,11 +18,12 @@
 //! | `woff1` | no | [`webfont`] module: WOFF1 encode and decode functions |
 //! | `woff2` | no | [`webfont`] module: WOFF2 encode and decode functions |
 //! | `subset` | no | [`subset`] module: [`subset_and_encode_woff2`] and glyph subsetting |
+//! | `hinting` | no | [`hinting`] module: [`hinting::HintingEngine`] TrueType bytecode hinting VM; enables [`hinted_outline`] |
 //! | `bundled-noto` | no | [`bundled`] module: embedded Noto Sans font bytes; enables [`system_with_bundled`] |
-//! | `bundled-noto-cjk-jp` | no | [`bundled`] module: embedded Noto Sans CJK JP (Japanese) font bytes |
-//! | `bundled-noto-cjk-kr` | no | [`bundled`] module: embedded Noto Sans CJK KR (Korean) font bytes |
-//! | `bundled-noto-cjk-sc` | no | [`bundled`] module: embedded Noto Sans CJK SC (Simplified Chinese) font bytes |
-//! | `bundled-noto-cjk-tc` | no | [`bundled`] module: embedded Noto Sans CJK TC (Traditional Chinese) font bytes |
+//! | `bundled-noto-cjk-jp` | no | [`bundled`] module: opt-in, build-time-supplied Noto Sans CJK JP (Japanese) accessor — not embedded, see `oxifont-bundled` |
+//! | `bundled-noto-cjk-kr` | no | [`bundled`] module: opt-in, build-time-supplied Noto Sans CJK KR (Korean) accessor — not embedded, see `oxifont-bundled` |
+//! | `bundled-noto-cjk-sc` | no | [`bundled`] module: opt-in, build-time-supplied Noto Sans CJK SC (Simplified Chinese) accessor — not embedded, see `oxifont-bundled` |
+//! | `bundled-noto-cjk-tc` | no | [`bundled`] module: opt-in, build-time-supplied Noto Sans CJK TC (Traditional Chinese) accessor — not embedded, see `oxifont-bundled` |
 //!
 //! ## Quick Start
 //!
@@ -150,6 +151,55 @@ pub mod webfont {
 #[cfg(feature = "subset")]
 pub mod subset {
     pub use oxifont_subset::*;
+}
+
+/// TrueType bytecode hinting (grid-fitting VM).
+///
+/// Re-exports [`oxifont_hinting::HintingEngine`] and friends so callers can
+/// grid-fit outlines at a given ppem without an extra `Cargo.toml` entry. See
+/// [`hinted_outline`] for a one-shot convenience wrapper.
+///
+/// Requires the `hinting` Cargo feature.
+#[cfg(feature = "hinting")]
+pub mod hinting {
+    pub use oxifont_hinting::*;
+}
+
+/// Grid-fit glyph `gid` from `font_bytes` at `ppem` using the TrueType
+/// bytecode hinting interpreter, returning the hinted outline as
+/// [`GlyphOutline`] path commands.
+///
+/// This is a convenience wrapper around [`hinting::HintingEngine`] for
+/// callers who just want one hinted outline. It reparses the font and reruns
+/// `fpgm`/`prep` on every call; for hinting many glyphs at the same ppem,
+/// construct a [`hinting::HintingEngine`] directly (via
+/// [`hinting::HintingEngine::new`] + [`hinting::HintingEngine::set_ppem`])
+/// and reuse it instead.
+///
+/// # Errors
+/// Returns [`hinting::HintingError`] if `font_bytes` cannot be parsed as an
+/// SFNT font, the font lacks the tables the interpreter needs, or the
+/// bytecode is malformed.
+///
+/// # Example
+/// ```no_run
+/// let font_bytes = std::fs::read("NotoSans-Bold.ttf").unwrap();
+/// let outline = oxifont::hinted_outline(&font_bytes, 36, 16).unwrap();
+/// println!("{} path commands", outline.len());
+/// ```
+///
+/// Requires the `hinting` Cargo feature.
+#[cfg(feature = "hinting")]
+pub fn hinted_outline(
+    font_bytes: &[u8],
+    gid: u16,
+    ppem: u16,
+) -> Result<Vec<GlyphOutline>, hinting::HintingError> {
+    let map = oxifont_core::sfnt::SfntTableMap::parse(font_bytes)?;
+    let mut engine = hinting::HintingEngine::new(&map)?;
+    engine.set_ppem(ppem)?;
+    let glyph = engine.hint_glyph(gid)?;
+    Ok(glyph.to_outline())
 }
 
 // ---------------------------------------------------------------------------

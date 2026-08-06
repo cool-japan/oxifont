@@ -25,7 +25,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_OBLIQUE,
 };
 
-use oxifont_core::{FaceInfo, FontCatalog, FontError, FontQuery, FontStretch, FontStyle};
+use oxifont_core::{FaceInfo, FontCatalog, FontError, FontFace, FontQuery, FontStretch, FontStyle};
 
 use crate::NativeError;
 use oxifont_parser::ParsedFace;
@@ -218,6 +218,66 @@ impl NativeCatalog {
 }
 
 // ---------------------------------------------------------------------------
+// oxifont-db bridge (feature = "db")
+// ---------------------------------------------------------------------------
+//
+// Mirrors the `into_db()`/`as_db()` bridge that `oxifont-adapter-pure`
+// provides, using the same `From<oxifont_core::FaceInfo> for
+// oxifont_db::FaceInfo` conversion from `oxifont-db/src/bridge.rs`. This is
+// the ergonomic route from DirectWrite enumeration to CSS Level 4 querying
+// now that the facade's `native` feature has been removed (0.2.0).
+
+#[cfg(feature = "db")]
+impl NativeCatalog {
+    /// Converts this catalog into an [`oxifont_db::FontDatabase`], enabling
+    /// full CSS Fonts Level 4 query access via [`oxifont_db::Query`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use oxifont_adapter_native::NativeCatalog;
+    /// use oxifont_db::Query;
+    ///
+    /// let native = NativeCatalog::load().unwrap();
+    /// let db = native.into_db();
+    /// if let Some(face) = Query::new(&db).family("sans-serif").weight(700).match_best() {
+    ///     println!("CSS match: {} weight={}", face.family, face.weight);
+    /// }
+    /// ```
+    pub fn into_db(self) -> oxifont_db::FontDatabase {
+        let mut db = oxifont_db::FontDatabase::new();
+        for face in self.faces {
+            db.add_face(oxifont_db::FaceInfo::from(face));
+        }
+        db
+    }
+
+    /// Produces an [`oxifont_db::FontDatabase`] from a reference to this
+    /// catalog, cloning each face record during conversion.
+    ///
+    /// Prefer [`NativeCatalog::into_db`] when this catalog is no longer
+    /// needed after the conversion.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use oxifont_adapter_native::NativeCatalog;
+    ///
+    /// let native = NativeCatalog::load().unwrap();
+    /// let db = native.as_db();
+    /// // `native` remains usable.
+    /// println!("{} faces in CSS db", db.stats().face_count);
+    /// ```
+    pub fn as_db(&self) -> oxifont_db::FontDatabase {
+        let mut db = oxifont_db::FontDatabase::new();
+        for face in &self.faces {
+            db.add_face(oxifont_db::FaceInfo::from(face));
+        }
+        db
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FontCatalog impl
 // ---------------------------------------------------------------------------
 
@@ -368,7 +428,11 @@ fn build_face_info(
 /// `IDWriteLocalFontFileLoader::GetFilePathFromKey`.
 ///
 /// Returns `None` for cloud-backed or in-memory fonts whose loader does not
-/// implement `IDWriteLocalFontFileLoader`.
+/// implement `IDWriteLocalFontFileLoader`, and — since `FaceInfo::path` can
+/// only describe a single file — for composite faces backed by more than one
+/// `IDWriteFontFile`. The latter are rare; skipping them entirely is safer
+/// than silently reporting only the first file's path, which would describe
+/// an incomplete font with no indication anything was dropped.
 fn extract_font_path(face: &IDWriteFontFace) -> Option<PathBuf> {
     // Query the number of font files.
     // SAFETY: face is valid; first call with null buf queries the count.
@@ -377,13 +441,17 @@ fn extract_font_path(face: &IDWriteFontFace) -> Option<PathBuf> {
     if file_count == 0 {
         return None;
     }
+    if file_count > 1 {
+        // Composite (multi-file) font face: `FaceInfo::path` has no way to
+        // represent more than one file, so the face is skipped rather than
+        // reported with a partial/misleading path.
+        return None;
+    }
 
-    // Retrieve the file pointers.
+    // Retrieve the file pointer (exactly one, per the check above).
     let mut files: Vec<Option<IDWriteFontFile>> = (0..file_count).map(|_| None).collect();
     // SAFETY: face is valid; the vec has exactly file_count slots.
     unsafe { face.GetFiles(&mut file_count, Some(files.as_mut_ptr())) }.ok()?;
-
-    // Use only the first file (composite fonts are rare and unsupported at M4).
     let font_file: &IDWriteFontFile = files.first()?.as_ref()?;
 
     // Retrieve the opaque reference key used by the loader.

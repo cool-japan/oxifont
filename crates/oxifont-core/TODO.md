@@ -1,7 +1,7 @@
 # oxifont-core TODO
 
 ## Status
-Shared trait surface and data types for the OxiFont ecosystem. Provides `FontFace`, `FontCatalog`, `FontCapabilities`, `FontCollection`, `NameTable`, `FaceInfo`, `FontQuery`, `FontStyle`, `FontStretch`, `EmbeddingLicense`, `VariationAxis`, `FontMetrics`, `GlyphOutline`, `KerningPair`, `ColorGlyphFormat`, `SfntTableMap`, and `FontError`. Zero external dependencies, ~860 SLOC. Feature-complete: every trait and type required by downstream crates is implemented. 119 tests passing, 0 failures.
+Shared trait surface and data types for the OxiFont ecosystem. Provides `FontFace`, `FontCatalog`, `FontCapabilities`, `FontCollection`, `NameTable`, `FaceInfo`, `FontQuery`, `FontStyle`, `FontStretch`, `EmbeddingLicense`, `VariationAxis`, `FontMetrics`, `GlyphOutline`, `KerningPair`, `ColorGlyphFormat`, `SfntTableMap`, and `FontError`. Zero external dependencies, ~940 SLOC. Feature-complete: every trait and type required by downstream crates is implemented. 132 tests passing, 0 failures.
 
 ## Core Implementation
 - [x] Add `FontStretch` enum (ultra-condensed..ultra-expanded, CSS values 1-9) and add `stretch` field to `FaceInfo` (~30 SLOC)

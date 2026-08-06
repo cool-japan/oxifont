@@ -11,14 +11,14 @@ The crate is Pure Rust with `#![forbid(unsafe_code)]` and is `no_std`-compatible
 
 ```toml
 [dependencies]
-oxifont-core = "0.2.1"
+oxifont-core = "0.2.2"
 ```
 
 By default the `std` feature is enabled. For a `no_std` build:
 
 ```toml
 [dependencies]
-oxifont-core = { version = "0.2.1", default-features = false }
+oxifont-core = { version = "0.2.2", default-features = false }
 ```
 
 ## Quick Start
@@ -217,7 +217,11 @@ A variable-font axis record (`fvar`): `tag: [u8; 4]`, `min_value: f32`, `default
 |------|-------------|
 | `SfntTableMap<'a>` | Zero-copy view of a single per-face SFNT table directory (backed by a `BTreeMap`) |
 | `SfntTableMap::parse(data)` | Parse a plain per-face SFNT (TTF/OTF); `ttcf` is rejected |
+| `SfntTableMap::parse_face(data, face_index)` | Parse face `face_index` of a plain SFNT **or** a `ttcf` collection (the `ttf-parser` `Face::parse(data, index)` shape) |
 | `SfntTableMap::parse_at_offset(data, off)` | Parse a TTC-embedded SFNT at `off` (absolute table offsets) |
+| `sfnt::face_count(data)` | `1` for a plain per-face SFNT, `numFonts` for a validated `ttcf` collection |
+| `sfnt::face_offset(data, face_index)` | Byte offset of a face's SFNT header within `data` |
+| `sfnt::TTC_MAGIC` | The `ttcf` container magic (`0x74746366`) |
 | `map.table(tag)` | Zero-copy `&[u8]` for a 4-byte tag, or `None` |
 | `map.tags()` | Iterator over sorted table tags |
 | `map.raw()` | Original raw per-face SFNT bytes |
@@ -247,10 +251,12 @@ A dependency-free reimplementation of the small subset of the [`dirs`](https://c
 
 | Variant | Description |
 |---------|-------------|
-| `Truncated` | Buffer too short for the header or directory |
-| `BadMagic(u32)` | SFNT version is not a recognised per-face magic (`ttcf` rejected) |
+| `Truncated` | Buffer too short for the header or directory (or, for a collection, for its declared offset table) |
+| `BadMagic(u32)` | SFNT version is not a recognised per-face magic (`ttcf` rejected by `parse`; use `parse_face`) |
 | `DuplicateTag([u8; 4])` | A tag appears more than once |
 | `OutOfBounds([u8; 4])` | A table's `offset + length` exceeds the buffer |
+| `MalformedCollection` | A `ttcf` header with an unknown major version or zero `numFonts` |
+| `FaceIndexOutOfRange { index, count }` | Requested face index at or beyond the number of faces available |
 
 ## Feature Flags
 

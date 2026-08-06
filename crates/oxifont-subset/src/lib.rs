@@ -17,6 +17,24 @@
 //! let cps: BTreeSet<char> = ['A', 'B', 'C'].iter().copied().collect();
 //! let subset_bytes = subset_font(&font_data, &cps).expect("subset failed");
 //! ```
+//!
+//! # Entry-point naming
+//!
+//! The subsetting entry points come in a small matrix. The base names —
+//! [`subset_font`], [`subset_font_with_options`], [`subset_by_gids`],
+//! [`subset_with_gid_set`] — read a single per-face SFNT at offset 0 and
+//! return the subset bytes (plus [`SubsetStats`] where applicable). Two
+//! orthogonal suffixes extend them:
+//!
+//! | Suffix | Effect |
+//! |--------|--------|
+//! | `_at_face` | Takes a `face_index` after `font_data`, so a `ttcf` collection (every stock Windows CJK font) can be subset without pre-slicing. See [`face_count`]. |
+//! | `_mapped` | Returns a [`SubsetGidMap`] as an extra tuple element, recovering the old ↔ new glyph-ID renumbering the subset performed. |
+//!
+//! [`subset_with_gid_set_at_face_mapped`] combines both. The base entry points
+//! reject a `ttcf` container rather than silently picking face 0 — a
+//! collection's faces are different fonts, so which one to subset is the
+//! caller's decision.
 
 /// CBDT/CBLC color bitmap table subsetting.
 pub mod cbdt;
@@ -26,10 +44,14 @@ pub mod cff;
 pub mod cmap;
 /// COLR table v0 subsetting: remap base/layer GIDs and drop removed records.
 pub mod colr;
+/// Old ↔ new glyph-ID mapping produced by a subset operation.
+pub mod gid_map;
 /// `glyf` and `loca` table rewriting utilities.
 pub mod glyf;
 /// `gvar` per-glyph variation data rewriter.
 pub mod gvar;
+/// Static instancing: pin a variable font at one design location.
+pub mod instance;
 /// `kern` table pair pruning and GID remapping.
 pub mod kern;
 /// Coverage, ClassDef, and GDEF layout table helpers.
@@ -40,6 +62,8 @@ pub mod math;
 pub mod os2;
 /// OpenType Layout (OTL) table rewriters: GSUB.
 pub mod otl;
+/// Contextual / chaining-contextual lookup subtables shared by GSUB and GPOS.
+pub(crate) mod otl_context;
 /// OpenType Layout GPOS table rewriter.
 pub mod otl_gpos;
 /// On-the-fly font subsetting for PDF text rendering pipelines.
@@ -53,10 +77,14 @@ pub mod tables;
 /// HVAR / VVAR delta-set index map rewriter for variable fonts.
 pub mod varfont;
 
+pub use gid_map::SubsetGidMap;
+pub use instance::instance;
 pub use tables::SubsetError;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use tables::{get_i16, get_u16, set_i16, set_u16};
 
 // ---------------------------------------------------------------------------
 // SubsetOptions
@@ -74,19 +102,37 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 ///
 /// let opts = SubsetOptions::default()
 ///     .strip_hints(true)
-///     .retain_names(false);
+///     .retain_names(false)
+///     .drop_variations(true);
 /// ```
+///
+/// This struct is `#[non_exhaustive]`: build it from
+/// [`SubsetOptions::default`] and the builder methods rather than with a struct
+/// literal, so that a new option can be added without a breaking change.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SubsetOptions {
     /// Drop `fpgm`, `prep`, and `cvt ` (TrueType hint tables).
     ///
     /// Useful for web fonts where hinting is rarely beneficial.
     pub strip_hints: bool,
 
-    /// Keep `GSUB`, `GPOS`, and `GDEF` tables verbatim.
+    /// Keep the `GSUB`, `GPOS`, and `GDEF` tables, with glyph ID references
+    /// remapped to the subset's new GID space (not copied verbatim — stale
+    /// GIDs would corrupt shaping).
     ///
-    /// Set to `false` if you want to strip layout tables (reduces file size
-    /// but disables OpenType shaping features).
+    /// Every GSUB lookup type (1–8) and GPOS lookup type (1–9) is remapped and
+    /// retained, including contextual / chaining lookups in all three formats
+    /// and their Extension-wrapped forms. A subtable is dropped only when it is
+    /// malformed or can no longer match anything under the subset (for example
+    /// a context whose input coverage emptied out); see
+    /// [`SubsetStats::dropped_context_subtables`] to detect the latter.
+    ///
+    /// Still not rewritten: GSUB/GPOS v1.1 `FeatureVariations`, which is
+    /// dropped along with the minor version (the rebuilt table is v1.0).
+    ///
+    /// Set to `false` if you want to strip layout tables entirely (reduces
+    /// file size but disables OpenType shaping features).
     pub retain_layout_tables: bool,
 
     /// Keep the full `name` table.
@@ -100,6 +146,20 @@ pub struct SubsetOptions {
     /// Codepoints in the requested set that fall outside this range are
     /// silently dropped.
     pub retain_codepoint_range: Option<(char, char)>,
+
+    /// Emit a **static** font: drop `fvar`, `avar`, `gvar`, `cvar`, `HVAR`,
+    /// `VVAR`, `MVAR` and `STAT`.
+    ///
+    /// The retained `glyf` outlines and `hmtx` advances are then the font's
+    /// **default master** — which is the correct static font only if the
+    /// default location is what you wanted. To pin a different location, call
+    /// [`instance()`](crate::instance()) first; its output has no variation
+    /// tables and this flag is then a no-op.
+    ///
+    /// Leaving this `false` on a variable face produces a subset that still
+    /// advertises axes: 2.6× larger on a stock two-axis UI font, and a program
+    /// whose outlines are the default master while `fvar` claims otherwise.
+    pub drop_variations: bool,
 }
 
 impl Default for SubsetOptions {
@@ -109,6 +169,7 @@ impl Default for SubsetOptions {
             retain_layout_tables: true,
             retain_names: true,
             retain_codepoint_range: None,
+            drop_variations: false,
         }
     }
 }
@@ -121,7 +182,10 @@ impl SubsetOptions {
         self
     }
 
-    /// Set whether layout tables (`GSUB`, `GPOS`, `GDEF`) are retained.
+    /// Set whether layout tables (`GSUB`, `GPOS`, `GDEF`) are retained (with
+    /// GID references remapped) rather than dropped entirely. See
+    /// [`SubsetOptions::retain_layout_tables`] for exactly what is remapped and
+    /// what is not.
     #[must_use]
     pub fn retain_layout_tables(mut self, v: bool) -> Self {
         self.retain_layout_tables = v;
@@ -144,6 +208,16 @@ impl SubsetOptions {
         self.retain_codepoint_range = Some((lo, hi));
         self
     }
+
+    /// Set whether the variation tables (`fvar`, `avar`, `gvar`, `cvar`,
+    /// `HVAR`, `VVAR`, `MVAR`, `STAT`) are dropped, producing a static font at
+    /// the source's default master. See
+    /// [`SubsetOptions::drop_variations`].
+    #[must_use]
+    pub fn drop_variations(mut self, v: bool) -> Self {
+        self.drop_variations = v;
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +235,36 @@ pub struct SubsetStats {
     pub glyphs_retained: u16,
     /// 4-byte tags of all tables present in the subset font.
     pub tables_retained: Vec<[u8; 4]>,
+    /// Number of advanced-layout subtables dropped during GSUB/GPOS rewriting:
+    /// GSUB types 5, 6 and 8 and GPOS types 3, 5, 7 and 8.
+    ///
+    /// All three contextual formats (glyph rule sets, class rule sets and
+    /// coverage-based) are remapped, so a non-zero count no longer means an
+    /// unsupported format was skipped. It means the subtable either was
+    /// malformed or can no longer match anything under this subset — e.g. a
+    /// context position whose coverage emptied out, or a cursive / mark
+    /// attachment whose glyphs all left the subset. Those are legitimate
+    /// prunes; the counter exists so callers can notice how much contextual
+    /// machinery their glyph set discarded.
+    ///
+    /// Extension-wrapped lookups (GSUB 7 / GPOS 9) are counted under the outer
+    /// Extension type, which is not in the list above, so a dropped
+    /// Extension-wrapped context is not reflected here.
+    pub dropped_context_subtables: usize,
+
+    /// The `CFF `/`CFF2` charstrings were copied from the source **verbatim**
+    /// instead of being subset.
+    ///
+    /// The CFF rewriter falls back to a verbatim copy for CID-keyed fonts
+    /// (those carrying an `FDSelect`) and for structures it cannot parse. The
+    /// resulting table is correct only under the *original* glyph numbering,
+    /// while the rest of the subset has been renumbered — so the glyphs render
+    /// as the wrong characters, and the table is as large as the source's.
+    ///
+    /// Callers that embed CFF subsets must check this: when it is `true` the
+    /// only safe options are to embed the original face or to refuse. It is
+    /// always `false` for a `glyf`-flavoured font.
+    pub cff_charstrings_verbatim: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -607,63 +711,25 @@ fn rewrite_name(name_data: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// maxp reader helpers
-// ---------------------------------------------------------------------------
-
-fn get_u16(data: &[u8], offset: usize) -> Option<u16> {
-    data.get(offset..offset + 2)
-        .map(|b| u16::from_be_bytes([b[0], b[1]]))
-}
-
-fn set_u16(data: &mut [u8], offset: usize, value: u16) {
-    if offset + 2 <= data.len() {
-        data[offset] = (value >> 8) as u8;
-        data[offset + 1] = (value & 0xFF) as u8;
-    }
-}
-
-fn set_i16(data: &mut [u8], offset: usize, value: i16) {
-    set_u16(data, offset, value as u16);
-}
-
-// ---------------------------------------------------------------------------
-// head helpers
-// ---------------------------------------------------------------------------
-
-fn get_i16(data: &[u8], offset: usize) -> Option<i16> {
-    data.get(offset..offset + 2)
-        .map(|b| i16::from_be_bytes([b[0], b[1]]))
-}
-
-// ---------------------------------------------------------------------------
 // Main public functions
 // ---------------------------------------------------------------------------
 
-/// Core subsetting engine: takes a pre-computed set of old GIDs and an
-/// (already-filtered) codepoint→old-GID mapping, applies the full table
-/// rewriting pipeline, and returns the subset font bytes together with
-/// [`SubsetStats`].
+/// Core subsetting engine, operating on an already-parsed table directory.
 ///
-/// Callers that need higher-level entry points should use [`subset_font`],
-/// [`subset_by_gids`], [`subset_font_for_web`], or [`subset_font_for_pdf`].
+/// `original_size` is what [`SubsetStats::original_size`] should report — the
+/// size of the whole input buffer, which for a `ttcf` collection is the whole
+/// collection rather than the selected face.
 ///
-/// # Errors
-/// Returns [`SubsetError`] if the font data is structurally invalid or a
-/// required table is absent.
-pub fn subset_with_gid_set(
-    font_data: &[u8],
+/// Returns the subset bytes, the statistics, and the old ↔ new glyph-ID map;
+/// the public wrappers drop whichever parts their signature does not carry.
+fn subset_from_tables<'a>(
+    orig_tables: &HashMap<[u8; 4], &'a [u8]>,
+    original_size: usize,
     old_gid_set: &BTreeSet<u16>,
     cp_to_old_gid: &BTreeMap<u32, u16>,
     opts: &SubsetOptions,
-) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
-    let original_size = font_data.len();
-
-    // -------------------------------------------------------------------------
-    // 1. Parse table directory.
-    // -------------------------------------------------------------------------
-    let orig_tables = tables::read_table_directory(font_data)?;
-
-    let get_table = |tag: &[u8; 4]| -> Result<&[u8], SubsetError> {
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
+    let get_table = |tag: &[u8; 4]| -> Result<&'a [u8], SubsetError> {
         orig_tables
             .get(tag)
             .copied()
@@ -690,7 +756,11 @@ pub fn subset_with_gid_set(
     // -------------------------------------------------------------------------
     // 3. Expand for composite component closure (TrueType only).
     // -------------------------------------------------------------------------
+    // `.notdef` is retained by every entry point's documented contract, and a
+    // PDF CIDFont that loses it silently renumbers glyph 0 into whatever the
+    // caller's lowest requested glyph was.
     let mut expanded_gid_set = old_gid_set.clone();
+    expanded_gid_set.insert(0);
     if !is_cff {
         let glyf_data = get_table(b"glyf")?;
         let loca_data = get_table(b"loca")?;
@@ -713,6 +783,11 @@ pub fn subset_with_gid_set(
     for (&old, &new) in &gid_remap {
         rev_remap.insert(new, old);
     }
+
+    // The same renumbering in the form callers can consult: a PDF CIDFont has
+    // to emit the *new* GIDs as CIDs, and the composite closure above means
+    // they are not predictable from `old_gid_set` alone.
+    let gid_map = SubsetGidMap::from_sorted_old_gids(expanded_gid_set.iter().copied().collect());
 
     // -------------------------------------------------------------------------
     // 5. Rewrite tables.
@@ -841,11 +916,27 @@ pub fn subset_with_gid_set(
     // the input `font_data`). Rewritten tables use `Cow::Owned`.
     let mut output_tables: Vec<([u8; 4], Cow<'_, [u8]>)> = Vec::with_capacity(25);
 
+    // Count of advanced GSUB/GPOS subtables dropped during layout rewriting
+    // (malformed, or no longer able to match under this subset) — surfaced in
+    // [`SubsetStats`] so callers can see how much contextual machinery went.
+    let mut dropped_context_subtables = 0usize;
+
+    // Set when the CFF rewriter fell back to copying the source charstrings:
+    // correct only under the original glyph numbering, which this subset has
+    // just changed. Surfaced in [`SubsetStats`] so an embedder can refuse.
+    let mut cff_charstrings_verbatim = false;
+
     // Verbatim pass-through tags (copy if present, subject to options).
     // Tags for hint tables — omitted when strip_hints=true.
     let hint_tags: &[&[u8; 4]] = &[b"fpgm", b"prep", b"cvt "];
     // Tags for layout tables — omitted when retain_layout_tables=false.
     let layout_tags: &[&[u8; 4]] = &[b"GDEF", b"GPOS", b"GSUB"];
+    // Tags that make a face variable — omitted when drop_variations=true.
+    // `cvar` and `MVAR` are on the list for completeness; neither is copied by
+    // this pipeline in the first place.
+    let variation_tags: &[&[u8; 4]] = &[
+        b"fvar", b"avar", b"gvar", b"cvar", b"HVAR", b"VVAR", b"MVAR", b"STAT",
+    ];
 
     let verbatim_tags: &[&[u8; 4]] = &[
         // GDEF is handled separately below (rewritten, not verbatim).
@@ -856,7 +947,11 @@ pub fn subset_with_gid_set(
         b"STAT", b"cvt ", b"fpgm", b"prep", b"gasp", b"feat", b"morx",
         // Variable font axis tables (verbatim — gvar is rewritten separately).
         b"fvar", b"avar", // OS-specific.
-        b"DSIG", b"BASE",
+        // `DSIG` is deliberately absent: a digital signature covers the bytes of
+        // the font it was made for, and every table here has just been
+        // rewritten, so carrying it over would ship a signature that is invalid
+        // by construction (and 8–10 KB of it on a stock UI font).
+        b"BASE",
         // Color: COLR is rewritten separately below; CPAL is GID-independent (verbatim).
         b"CPAL",
         // CBDT/CBLC are rewritten separately below (paired bitmap index/data).
@@ -869,6 +964,10 @@ pub fn subset_with_gid_set(
         }
         // Apply retain_layout_tables filter.
         if !opts.retain_layout_tables && layout_tags.contains(&tag) {
+            continue;
+        }
+        // Apply drop_variations filter.
+        if opts.drop_variations && variation_tags.contains(&tag) {
             continue;
         }
         if let Some(&data) = orig_tables.get(tag) {
@@ -902,6 +1001,19 @@ pub fn subset_with_gid_set(
     {
         use rayon::prelude::*;
 
+        // Dropped-context accounting for the parallel path. The rewrite is a
+        // pure function of (table bytes, gid_remap), so computing the count here
+        // (rather than threading it through the task closures) keeps the task
+        // machinery unchanged; it only touches the two layout tables.
+        if opts.retain_layout_tables {
+            if let Some(&data) = orig_tables.get(b"GSUB") {
+                dropped_context_subtables += otl::rewrite_gsub_counted(data, &gid_remap).1;
+            }
+            if let Some(&data) = orig_tables.get(b"GPOS") {
+                dropped_context_subtables += otl_gpos::rewrite_gpos_counted(data, &gid_remap).1;
+            }
+        }
+
         // Each task returns zero, one, or two tagged table entries.
         // `Err` propagates from fallible rewriters (HVAR, VVAR) so that a
         // malformed table is still surfaced as a `SubsetError`, matching the
@@ -910,6 +1022,8 @@ pub fn subset_with_gid_set(
             None,
             One([u8; 4], Vec<u8>),
             Two([u8; 4], Vec<u8>, [u8; 4], Vec<u8>),
+            /// One table plus the CFF verbatim-fallback indicator.
+            Flagged([u8; 4], Vec<u8>, bool),
         }
 
         // Capture references that are shared read-only across all parallel tasks.
@@ -918,6 +1032,7 @@ pub fn subset_with_gid_set(
         let orig_tables_ref = &orig_tables;
         let surviving_codepoints_ref = &surviving_codepoints;
         let retain_layout = opts.retain_layout_tables;
+        let drop_variations = opts.drop_variations;
 
         // Build task list as a vec of boxed closures.  Each closure captures
         // immutable references to the data it needs and returns
@@ -1033,43 +1148,41 @@ pub fn subset_with_gid_set(
             // CFF
             if let Some(&d) = orig_tables_ref.get(b"CFF ") {
                 v.push(Box::new(move || {
-                    Ok(TableResult::One(
-                        *b"CFF ",
-                        cff::rewrite_cff(d, gid_remap_ref),
-                    ))
+                    let (bytes, verbatim) = cff::rewrite_cff_checked(d, gid_remap_ref);
+                    Ok(TableResult::Flagged(*b"CFF ", bytes, verbatim))
                 }));
             }
             // CFF2
             if let Some(&d) = orig_tables_ref.get(b"CFF2") {
                 v.push(Box::new(move || {
-                    Ok(TableResult::One(
-                        *b"CFF2",
-                        cff::rewrite_cff2(d, gid_remap_ref),
-                    ))
+                    let (bytes, verbatim) = cff::rewrite_cff2_checked(d, gid_remap_ref);
+                    Ok(TableResult::Flagged(*b"CFF2", bytes, verbatim))
                 }));
             }
-            // HVAR — fallible: propagates SubsetError on malformed table data.
-            if let Some(&d) = orig_tables_ref.get(b"HVAR") {
-                v.push(Box::new(move || {
-                    let out = varfont::rewrite_hvar_vvar(d, gid_remap_ref, new_glyph_count)?;
-                    Ok(TableResult::One(*b"HVAR", out))
-                }));
-            }
-            // VVAR — fallible: propagates SubsetError on malformed table data.
-            if let Some(&d) = orig_tables_ref.get(b"VVAR") {
-                v.push(Box::new(move || {
-                    let out = varfont::rewrite_hvar_vvar(d, gid_remap_ref, new_glyph_count)?;
-                    Ok(TableResult::One(*b"VVAR", out))
-                }));
-            }
-            // gvar
-            if let Some(&d) = orig_tables_ref.get(b"gvar") {
-                v.push(Box::new(move || {
-                    Ok(TableResult::One(
-                        *b"gvar",
-                        gvar::rewrite_gvar(d, rev_remap_ref, new_glyph_count),
-                    ))
-                }));
+            if !drop_variations {
+                // HVAR — fallible: propagates SubsetError on malformed table data.
+                if let Some(&d) = orig_tables_ref.get(b"HVAR") {
+                    v.push(Box::new(move || {
+                        let out = varfont::rewrite_hvar_vvar(d, gid_remap_ref, new_glyph_count)?;
+                        Ok(TableResult::One(*b"HVAR", out))
+                    }));
+                }
+                // VVAR — fallible: propagates SubsetError on malformed table data.
+                if let Some(&d) = orig_tables_ref.get(b"VVAR") {
+                    v.push(Box::new(move || {
+                        let out = varfont::rewrite_hvar_vvar(d, gid_remap_ref, new_glyph_count)?;
+                        Ok(TableResult::One(*b"VVAR", out))
+                    }));
+                }
+                // gvar
+                if let Some(&d) = orig_tables_ref.get(b"gvar") {
+                    v.push(Box::new(move || {
+                        Ok(TableResult::One(
+                            *b"gvar",
+                            gvar::rewrite_gvar(d, rev_remap_ref, new_glyph_count),
+                        ))
+                    }));
+                }
             }
 
             v
@@ -1094,6 +1207,10 @@ pub fn subset_with_gid_set(
                     output_tables.push((tag1, Cow::Owned(data1)));
                     output_tables.push((tag2, Cow::Owned(data2)));
                 }
+                TableResult::Flagged(tag, data, verbatim) => {
+                    cff_charstrings_verbatim |= verbatim;
+                    output_tables.push((tag, Cow::Owned(data)));
+                }
             }
         }
     }
@@ -1111,17 +1228,18 @@ pub fn subset_with_gid_set(
         // GSUB: rewrite GID references (SFL chain + subtables) when retain_layout_tables is true.
         if opts.retain_layout_tables {
             if let Some(&data) = orig_tables.get(b"GSUB") {
-                output_tables.push((*b"GSUB", Cow::Owned(otl::rewrite_gsub(data, &gid_remap))));
+                let (bytes, dropped) = otl::rewrite_gsub_counted(data, &gid_remap);
+                dropped_context_subtables += dropped;
+                output_tables.push((*b"GSUB", Cow::Owned(bytes)));
             }
         }
 
         // GPOS: rewrite GID references (SFL chain + subtables) when retain_layout_tables is true.
         if opts.retain_layout_tables {
             if let Some(&data) = orig_tables.get(b"GPOS") {
-                output_tables.push((
-                    *b"GPOS",
-                    Cow::Owned(otl_gpos::rewrite_gpos(data, &gid_remap)),
-                ));
+                let (bytes, dropped) = otl_gpos::rewrite_gpos_counted(data, &gid_remap);
+                dropped_context_subtables += dropped;
+                output_tables.push((*b"GPOS", Cow::Owned(bytes)));
             }
         }
 
@@ -1193,33 +1311,40 @@ pub fn subset_with_gid_set(
 
         // CFF : rewrite for subset GID space (or copy verbatim on parse failure).
         if let Some(&cff_data) = orig_tables.get(b"CFF ") {
-            output_tables.push((*b"CFF ", Cow::Owned(cff::rewrite_cff(cff_data, &gid_remap))));
+            let (bytes, verbatim) = cff::rewrite_cff_checked(cff_data, &gid_remap);
+            cff_charstrings_verbatim |= verbatim;
+            output_tables.push((*b"CFF ", Cow::Owned(bytes)));
         }
         // CFF2: variable OpenType — rewrite CharStrings for subset GID space.
         // Falls back to verbatim copy on parse failure or CID-keyed fonts.
         if let Some(&cff2_data) = orig_tables.get(b"CFF2") {
-            let rewritten = cff::rewrite_cff2(cff2_data, &gid_remap);
-            output_tables.push((*b"CFF2", Cow::Owned(rewritten)));
+            let (bytes, verbatim) = cff::rewrite_cff2_checked(cff2_data, &gid_remap);
+            cff_charstrings_verbatim |= verbatim;
+            output_tables.push((*b"CFF2", Cow::Owned(bytes)));
         }
 
-        // HVAR / VVAR
-        if let Some(hvar_data) = orig_tables.get(b"HVAR") {
-            if let Ok(out) = varfont::rewrite_hvar_vvar(hvar_data, &gid_remap, new_glyph_count) {
-                output_tables.push((*b"HVAR", Cow::Owned(out)));
+        if !opts.drop_variations {
+            // HVAR / VVAR
+            if let Some(hvar_data) = orig_tables.get(b"HVAR") {
+                if let Ok(out) = varfont::rewrite_hvar_vvar(hvar_data, &gid_remap, new_glyph_count)
+                {
+                    output_tables.push((*b"HVAR", Cow::Owned(out)));
+                }
             }
-        }
-        if let Some(vvar_data) = orig_tables.get(b"VVAR") {
-            if let Ok(out) = varfont::rewrite_hvar_vvar(vvar_data, &gid_remap, new_glyph_count) {
-                output_tables.push((*b"VVAR", Cow::Owned(out)));
+            if let Some(vvar_data) = orig_tables.get(b"VVAR") {
+                if let Ok(out) = varfont::rewrite_hvar_vvar(vvar_data, &gid_remap, new_glyph_count)
+                {
+                    output_tables.push((*b"VVAR", Cow::Owned(out)));
+                }
             }
-        }
 
-        // gvar
-        if let Some(&gvar_data) = orig_tables.get(b"gvar") {
-            output_tables.push((
-                *b"gvar",
-                Cow::Owned(gvar::rewrite_gvar(gvar_data, &rev_remap, new_glyph_count)),
-            ));
+            // gvar
+            if let Some(&gvar_data) = orig_tables.get(b"gvar") {
+                output_tables.push((
+                    *b"gvar",
+                    Cow::Owned(gvar::rewrite_gvar(gvar_data, &rev_remap, new_glyph_count)),
+                ));
+            }
         }
     }
 
@@ -1257,9 +1382,127 @@ pub fn subset_with_gid_set(
         subset_size,
         glyphs_retained: new_glyph_count,
         tables_retained,
+        dropped_context_subtables,
+        cff_charstrings_verbatim,
     };
 
-    Ok((subset_bytes, stats))
+    Ok((subset_bytes, stats, gid_map))
+}
+
+/// Core subsetting engine: takes a pre-computed set of old GIDs and an
+/// (already-filtered) codepoint→old-GID mapping, applies the full table
+/// rewriting pipeline, and returns the subset font bytes together with
+/// [`SubsetStats`].
+///
+/// Callers that need higher-level entry points should use [`subset_font`],
+/// [`subset_by_gids`], [`subset_font_for_web`], or [`subset_font_for_pdf`].
+/// Use [`subset_with_gid_set_mapped`] to also receive the old ↔ new glyph-ID
+/// map, and [`subset_with_gid_set_at_face`] to select a face out of a `ttcf`
+/// collection.
+///
+/// # Errors
+/// Returns [`SubsetError`] if the font data is structurally invalid (including
+/// a `ttcf` collection, which must go through an `_at_face` entry point) or a
+/// required table is absent.
+pub fn subset_with_gid_set(
+    font_data: &[u8],
+    old_gid_set: &BTreeSet<u16>,
+    cp_to_old_gid: &BTreeMap<u32, u16>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
+    let (bytes, stats, _map) =
+        subset_with_gid_set_mapped(font_data, old_gid_set, cp_to_old_gid, opts)?;
+    Ok((bytes, stats))
+}
+
+/// As [`subset_with_gid_set`], additionally returning the [`SubsetGidMap`]
+/// describing the old ↔ new glyph-ID renumbering.
+///
+/// The subset bytes and statistics are identical to [`subset_with_gid_set`];
+/// only the map is added.
+///
+/// # Errors
+/// As [`subset_with_gid_set`].
+pub fn subset_with_gid_set_mapped(
+    font_data: &[u8],
+    old_gid_set: &BTreeSet<u16>,
+    cp_to_old_gid: &BTreeMap<u32, u16>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
+    let orig_tables = tables::read_table_directory(font_data)?;
+    subset_from_tables(
+        &orig_tables,
+        font_data.len(),
+        old_gid_set,
+        cp_to_old_gid,
+        opts,
+    )
+}
+
+/// As [`subset_with_gid_set`], selecting face `face_index` of `font_data`.
+///
+/// `font_data` may be a plain per-face SFNT (in which case the only valid
+/// index is `0` and the behaviour is byte-identical to
+/// [`subset_with_gid_set`]) or a `ttcf` collection.
+///
+/// # Errors
+/// Returns [`SubsetError::FaceIndexOutOfRange`] when `face_index` is at or
+/// beyond [`face_count`], otherwise as [`subset_with_gid_set`].
+pub fn subset_with_gid_set_at_face(
+    font_data: &[u8],
+    face_index: u32,
+    old_gid_set: &BTreeSet<u16>,
+    cp_to_old_gid: &BTreeMap<u32, u16>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
+    let (bytes, stats, _map) = subset_with_gid_set_at_face_mapped(
+        font_data,
+        face_index,
+        old_gid_set,
+        cp_to_old_gid,
+        opts,
+    )?;
+    Ok((bytes, stats))
+}
+
+/// The fully general byte-slice entry point: face selection *and* the
+/// glyph-ID map.
+///
+/// Equivalent to [`subset_with_gid_set`] with both suffixes applied; every
+/// other entry point that takes raw font bytes is a specialisation of it.
+/// ([`subset_with_table_map_mapped`] is the equivalent for callers that
+/// already hold a parsed `SfntTableMap`.)
+///
+/// # Errors
+/// As [`subset_with_gid_set_at_face`].
+pub fn subset_with_gid_set_at_face_mapped(
+    font_data: &[u8],
+    face_index: u32,
+    old_gid_set: &BTreeSet<u16>,
+    cp_to_old_gid: &BTreeMap<u32, u16>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
+    let orig_tables = tables::read_table_directory_at_face(font_data, face_index)?;
+    subset_from_tables(
+        &orig_tables,
+        font_data.len(),
+        old_gid_set,
+        cp_to_old_gid,
+        opts,
+    )
+}
+
+/// Returns the number of faces `font_data` holds.
+///
+/// A plain TTF/OTF holds exactly one face; a `ttcf` collection holds its
+/// declared `numFonts`. Every index in `0..face_count(data)?` is accepted by
+/// the `_at_face` entry points.
+///
+/// # Errors
+/// Returns [`SubsetError::InvalidFont`] when `font_data` is neither a
+/// recognised per-face SFNT nor a well-formed `ttcf` collection.
+pub fn face_count(font_data: &[u8]) -> Result<u32, SubsetError> {
+    oxifont_core::sfnt::face_count(font_data).map_err(tables::map_sfnt_error)
 }
 
 /// Subset a TrueType/OpenType font to contain only the given codepoints.
@@ -1286,30 +1529,43 @@ pub fn subset_font(font_data: &[u8], codepoints: &BTreeSet<char>) -> Result<Vec<
     Ok(bytes)
 }
 
-/// Subset a font with explicit [`SubsetOptions`], returning both the subset
-/// bytes and [`SubsetStats`].
+/// As [`subset_font`], selecting face `face_index` of `font_data`.
+///
+/// This is the entry point for a `ttcf` collection — every stock Windows CJK
+/// family (`msgothic.ttc`, `meiryo.ttc`, `YuGothM.ttc`, `msyh.ttc`, …) ships
+/// as one. For a plain TTF/OTF the only valid index is `0`, and the output is
+/// byte-identical to [`subset_font`]. Use [`face_count`] to discover the range
+/// of valid indices.
 ///
 /// # Errors
-/// Returns [`SubsetError`] if the font data is structurally invalid or a
-/// required table is absent.
-pub fn subset_font_with_options(
+/// Returns [`SubsetError::FaceIndexOutOfRange`] when `face_index` is at or
+/// beyond [`face_count`], otherwise as [`subset_font`].
+pub fn subset_font_at_face(
     font_data: &[u8],
+    face_index: u32,
+    codepoints: &BTreeSet<char>,
+) -> Result<Vec<u8>, SubsetError> {
+    let opts = SubsetOptions::default();
+    let (bytes, _stats) =
+        subset_font_with_options_at_face(font_data, face_index, codepoints, &opts)?;
+    Ok(bytes)
+}
+
+/// Resolve `codepoints` through the font's `cmap`, honouring
+/// [`SubsetOptions::retain_codepoint_range`].
+///
+/// Returns the old-GID set (always containing `.notdef`) and the surviving
+/// codepoint→old-GID map.
+fn resolve_codepoints_to_gids(
+    orig_tables: &HashMap<[u8; 4], &[u8]>,
     codepoints: &BTreeSet<char>,
     opts: &SubsetOptions,
-) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
-    // -------------------------------------------------------------------------
-    // Parse table directory (needed for cmap scan).
-    // -------------------------------------------------------------------------
-    let orig_tables = tables::read_table_directory(font_data)?;
-
+) -> Result<(BTreeSet<u16>, BTreeMap<u32, u16>), SubsetError> {
     let cmap_data = orig_tables
         .get(b"cmap")
         .copied()
         .ok_or(SubsetError::TableMissing(*b"cmap"))?;
 
-    // -------------------------------------------------------------------------
-    // Resolve codepoints → old GIDs via cmap (with optional range filter).
-    // -------------------------------------------------------------------------
     let cp_to_old_gid_map = cmap_to_gid_map(cmap_data)?;
 
     let mut old_gid_set: BTreeSet<u16> = BTreeSet::new();
@@ -1332,7 +1588,66 @@ pub fn subset_font_with_options(
         }
     }
 
-    subset_with_gid_set(font_data, &old_gid_set, &cp_to_old_gid, opts)
+    Ok((old_gid_set, cp_to_old_gid))
+}
+
+/// Subset a font with explicit [`SubsetOptions`], returning both the subset
+/// bytes and [`SubsetStats`].
+///
+/// # Errors
+/// Returns [`SubsetError`] if the font data is structurally invalid or a
+/// required table is absent.
+pub fn subset_font_with_options(
+    font_data: &[u8],
+    codepoints: &BTreeSet<char>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
+    let (bytes, stats, _map) = subset_font_with_options_mapped(font_data, codepoints, opts)?;
+    Ok((bytes, stats))
+}
+
+/// As [`subset_font_with_options`], additionally returning the
+/// [`SubsetGidMap`] describing the old ↔ new glyph-ID renumbering.
+///
+/// # Errors
+/// As [`subset_font_with_options`].
+pub fn subset_font_with_options_mapped(
+    font_data: &[u8],
+    codepoints: &BTreeSet<char>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
+    let orig_tables = tables::read_table_directory(font_data)?;
+    let (old_gid_set, cp_to_old_gid) = resolve_codepoints_to_gids(&orig_tables, codepoints, opts)?;
+    subset_from_tables(
+        &orig_tables,
+        font_data.len(),
+        &old_gid_set,
+        &cp_to_old_gid,
+        opts,
+    )
+}
+
+/// As [`subset_font_with_options`], selecting face `face_index` of `font_data`.
+///
+/// # Errors
+/// Returns [`SubsetError::FaceIndexOutOfRange`] when `face_index` is at or
+/// beyond [`face_count`], otherwise as [`subset_font_with_options`].
+pub fn subset_font_with_options_at_face(
+    font_data: &[u8],
+    face_index: u32,
+    codepoints: &BTreeSet<char>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
+    let orig_tables = tables::read_table_directory_at_face(font_data, face_index)?;
+    let (old_gid_set, cp_to_old_gid) = resolve_codepoints_to_gids(&orig_tables, codepoints, opts)?;
+    let (bytes, stats, _map) = subset_from_tables(
+        &orig_tables,
+        font_data.len(),
+        &old_gid_set,
+        &cp_to_old_gid,
+        opts,
+    )?;
+    Ok((bytes, stats))
 }
 
 /// Subset a font by an explicit set of old GIDs, bypassing the cmap scan.
@@ -1345,13 +1660,47 @@ pub fn subset_font_with_options(
 /// Returns [`SubsetError`] if the font data is structurally invalid or a
 /// required table is absent.
 pub fn subset_by_gids(font_data: &[u8], gids: &BTreeSet<u16>) -> Result<Vec<u8>, SubsetError> {
+    let (bytes, _stats, _map) = subset_by_gids_mapped(font_data, gids)?;
+    Ok(bytes)
+}
+
+/// As [`subset_by_gids`], additionally returning the [`SubsetGidMap`].
+///
+/// This is the direct answer to "which new GID did the glyph I asked for get?"
+/// — including for composite components that the closure pulled in but the
+/// caller never requested.
+///
+/// # Errors
+/// As [`subset_by_gids`].
+pub fn subset_by_gids_mapped(
+    font_data: &[u8],
+    gids: &BTreeSet<u16>,
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
     let opts = SubsetOptions::default();
     // Always include .notdef.
     let mut old_gid_set = gids.clone();
     old_gid_set.insert(0);
     // No codepoint mapping — cmap will be empty.
     let cp_to_old_gid: BTreeMap<u32, u16> = BTreeMap::new();
-    let (bytes, _stats) = subset_with_gid_set(font_data, &old_gid_set, &cp_to_old_gid, &opts)?;
+    subset_with_gid_set_mapped(font_data, &old_gid_set, &cp_to_old_gid, &opts)
+}
+
+/// As [`subset_by_gids`], selecting face `face_index` of `font_data`.
+///
+/// # Errors
+/// Returns [`SubsetError::FaceIndexOutOfRange`] when `face_index` is at or
+/// beyond [`face_count`], otherwise as [`subset_by_gids`].
+pub fn subset_by_gids_at_face(
+    font_data: &[u8],
+    face_index: u32,
+    gids: &BTreeSet<u16>,
+) -> Result<Vec<u8>, SubsetError> {
+    let opts = SubsetOptions::default();
+    let mut old_gid_set = gids.clone();
+    old_gid_set.insert(0);
+    let cp_to_old_gid: BTreeMap<u32, u16> = BTreeMap::new();
+    let (bytes, _stats) =
+        subset_with_gid_set_at_face(font_data, face_index, &old_gid_set, &cp_to_old_gid, &opts)?;
     Ok(bytes)
 }
 
@@ -1407,6 +1756,12 @@ pub fn subset_font_for_pdf(
 /// mapping is not needed (the output `cmap` will be empty, suitable for
 /// PDF workflows).
 ///
+/// The map's own tables are used directly, so a map produced by
+/// [`SfntTableMap::parse_face`](oxifont_core::sfnt::SfntTableMap::parse_face)
+/// or
+/// [`parse_at_offset`](oxifont_core::sfnt::SfntTableMap::parse_at_offset)
+/// subsets that face of a `ttcf` collection.
+///
 /// # Errors
 /// Returns [`SubsetError`] if the font data is structurally invalid or a
 /// required table is absent.
@@ -1416,8 +1771,36 @@ pub fn subset_with_table_map(
     cp_to_old_gid: &BTreeMap<u32, u16>,
     opts: &SubsetOptions,
 ) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
+    let (bytes, stats, _map) = subset_with_table_map_mapped(map, gid_set, cp_to_old_gid, opts)?;
+    Ok((bytes, stats))
+}
+
+/// As [`subset_with_table_map`], additionally returning the [`SubsetGidMap`].
+///
+/// # Errors
+/// As [`subset_with_table_map`].
+pub fn subset_with_table_map_mapped(
+    map: &oxifont_core::sfnt::SfntTableMap<'_>,
+    gid_set: &BTreeSet<u16>,
+    cp_to_old_gid: &BTreeMap<u32, u16>,
+    opts: &SubsetOptions,
+) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
     // Always include .notdef.
     let mut old_gid_set = gid_set.clone();
     old_gid_set.insert(0);
-    subset_with_gid_set(map.raw(), &old_gid_set, cp_to_old_gid, opts)
+
+    let mut orig_tables: HashMap<[u8; 4], &[u8]> = HashMap::with_capacity(map.num_tables());
+    for tag in map.tags() {
+        if let Some(slice) = map.table(tag) {
+            orig_tables.insert(*tag, slice);
+        }
+    }
+
+    subset_from_tables(
+        &orig_tables,
+        map.raw().len(),
+        &old_gid_set,
+        cp_to_old_gid,
+        opts,
+    )
 }

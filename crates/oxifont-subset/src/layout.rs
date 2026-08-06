@@ -107,6 +107,35 @@ pub fn read_coverage(data: &[u8], offset: usize) -> Vec<u16> {
     }
 }
 
+/// Return the byte length of the Coverage table at `offset`, or `None` on a
+/// malformed / truncated table. Format 1 = 4 + glyphCount*2; format 2 =
+/// 4 + rangeCount*6.
+pub fn coverage_len(data: &[u8], offset: usize) -> Option<usize> {
+    let sub = data.get(offset..)?;
+    let format = r_u16(sub, 0)?;
+    match format {
+        1 => {
+            let count = r_u16(sub, 2)? as usize;
+            let len = 4 + count * 2;
+            if sub.len() < len {
+                None
+            } else {
+                Some(len)
+            }
+        }
+        2 => {
+            let range_count = r_u16(sub, 2)? as usize;
+            let len = 4 + range_count * 6;
+            if sub.len() < len {
+                None
+            } else {
+                Some(len)
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Count consecutive runs in a sorted GID slice.
 fn count_runs(gids: &[u16]) -> usize {
     if gids.is_empty() {

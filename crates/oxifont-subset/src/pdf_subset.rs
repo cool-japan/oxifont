@@ -19,6 +19,18 @@
 //!   construction time, allowing strip-hints / name-table filtering etc.
 //! - **Statistics return**: `finalize` returns `(Vec<u8>, SubsetStats)` so the
 //!   caller can record compression ratios and glyph counts.
+//! - **Recoverable CID assignment**:
+//!   [`PdfFontSubsetter::finalize_mapped`](crate::pdf_subset::PdfFontSubsetter::finalize_mapped)
+//!   (and the `gid_map` field of
+//!   [`PdfSubsetResult`](crate::pdf_subset::PdfSubsetResult)) returns the
+//!   [`SubsetGidMap`](crate::SubsetGidMap), which is what a CIDFont written
+//!   with `Identity-H` and `/CIDToGIDMap /Identity` needs — the CIDs it must
+//!   emit are the subset's *new* glyph IDs, and the composite closure makes
+//!   those unpredictable from the accumulated set alone.
+//! - **Collections**:
+//!   [`PdfFontSubsetter::new_at_face`](crate::pdf_subset::PdfFontSubsetter::new_at_face)
+//!   and its presets select a face out of a `ttcf` container, so a stock
+//!   Windows CJK family can be embedded without pre-slicing.
 //!
 //! # Example
 //!
@@ -47,7 +59,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{subset_with_gid_set, SubsetError, SubsetOptions, SubsetStats};
+use crate::{
+    subset_with_gid_set_at_face_mapped, SubsetError, SubsetGidMap, SubsetOptions, SubsetStats,
+};
 
 // ---------------------------------------------------------------------------
 // PdfFontSubsetter
@@ -69,6 +83,8 @@ use crate::{subset_with_gid_set, SubsetError, SubsetOptions, SubsetStats};
 pub struct PdfFontSubsetter {
     /// Raw font bytes that will be subset.
     font_data: Vec<u8>,
+    /// Index of the face to subset within `font_data` (0 for a plain TTF/OTF).
+    face_index: u32,
     /// Subsetting configuration (strip_hints, retain_names, …).
     opts: SubsetOptions,
     /// Accumulated Unicode codepoints (from `add_codepoint` / `add_text`).
@@ -86,8 +102,25 @@ impl PdfFontSubsetter {
     ///
     /// [`finalize`]: PdfFontSubsetter::finalize
     pub fn new(font_data: Vec<u8>, opts: SubsetOptions) -> Self {
+        Self::new_at_face(font_data, 0, opts)
+    }
+
+    /// Create a new accumulator that will subset face `face_index` of
+    /// `font_data` using `opts`.
+    ///
+    /// `font_data` may be a plain per-face SFNT (where the only valid index is
+    /// `0`, making this identical to [`new`]) or a `ttcf` collection — the
+    /// form every stock Windows CJK family ships in. The index is not
+    /// validated here; an out-of-range index surfaces as
+    /// [`SubsetError::FaceIndexOutOfRange`] from [`finalize`]. Use
+    /// [`crate::face_count`] to discover the valid range up front.
+    ///
+    /// [`new`]: PdfFontSubsetter::new
+    /// [`finalize`]: PdfFontSubsetter::finalize
+    pub fn new_at_face(font_data: Vec<u8>, face_index: u32, opts: SubsetOptions) -> Self {
         Self {
             font_data,
+            face_index,
             opts,
             codepoints: BTreeSet::new(),
             gids: BTreeSet::new(),
@@ -99,10 +132,16 @@ impl PdfFontSubsetter {
     /// The default PDF preset keeps hint tables and the full name table
     /// (matching [`crate::subset_font_for_pdf`]).
     pub fn for_pdf(font_data: Vec<u8>) -> Self {
+        Self::for_pdf_at_face(font_data, 0)
+    }
+
+    /// [`for_pdf`](PdfFontSubsetter::for_pdf) for face `face_index` of a
+    /// `ttcf` collection.
+    pub fn for_pdf_at_face(font_data: Vec<u8>, face_index: u32) -> Self {
         let opts = SubsetOptions::default()
             .strip_hints(false)
             .retain_names(true);
-        Self::new(font_data, opts)
+        Self::new_at_face(font_data, face_index, opts)
     }
 
     /// Create a new accumulator using the web subsetting preset.
@@ -110,10 +149,23 @@ impl PdfFontSubsetter {
     /// The web preset strips hint tables and trims the name table to IDs 0–6
     /// (matching [`crate::subset_font_for_web`]).
     pub fn for_web(font_data: Vec<u8>) -> Self {
+        Self::for_web_at_face(font_data, 0)
+    }
+
+    /// [`for_web`](PdfFontSubsetter::for_web) for face `face_index` of a
+    /// `ttcf` collection.
+    pub fn for_web_at_face(font_data: Vec<u8>, face_index: u32) -> Self {
         let opts = SubsetOptions::default()
             .strip_hints(true)
             .retain_names(false);
-        Self::new(font_data, opts)
+        Self::new_at_face(font_data, face_index, opts)
+    }
+
+    /// The index of the face this accumulator will subset (0 for a plain
+    /// TTF/OTF).
+    #[inline]
+    pub fn face_index(&self) -> u32 {
+        self.face_index
     }
 
     // -----------------------------------------------------------------------
@@ -231,18 +283,43 @@ impl PdfFontSubsetter {
     /// this call — call [`reset`] if you need to reuse the accumulator for a
     /// new document.
     ///
+    /// Use [`finalize_mapped`] when you also need the old ↔ new glyph-ID map
+    /// (i.e. the CIDs to write for a CIDFont).
+    ///
     /// # Errors
     /// Returns [`SubsetError`] if the stored font data is structurally invalid
-    /// or a required table is absent.
+    /// or a required table is absent, or
+    /// [`SubsetError::FaceIndexOutOfRange`] if this accumulator was built with
+    /// a face index the font data does not have.
     ///
     /// [`reset`]: PdfFontSubsetter::reset
+    /// [`finalize_mapped`]: PdfFontSubsetter::finalize_mapped
     pub fn finalize(&self) -> Result<(Vec<u8>, SubsetStats), SubsetError> {
-        use crate::tables::read_table_directory;
+        let (bytes, stats, _map) = self.finalize_mapped()?;
+        Ok((bytes, stats))
+    }
+
+    /// As [`finalize`], additionally returning the [`SubsetGidMap`].
+    ///
+    /// A PDF CIDFont embedded with `Identity-H` and `/CIDToGIDMap /Identity`
+    /// must emit the subset's **new** glyph IDs as CIDs. Those IDs are the
+    /// dense rank of each retained glyph after composite-component closure, so
+    /// they cannot be derived from the accumulated codepoint/GID sets alone —
+    /// this is the accessor that recovers them.
+    ///
+    /// The subset bytes and statistics are identical to [`finalize`].
+    ///
+    /// # Errors
+    /// As [`finalize`].
+    ///
+    /// [`finalize`]: PdfFontSubsetter::finalize
+    pub fn finalize_mapped(&self) -> Result<(Vec<u8>, SubsetStats, SubsetGidMap), SubsetError> {
+        use crate::tables::read_table_directory_at_face;
 
         let font_data = &self.font_data;
 
         // Parse the cmap to resolve codepoints → old GIDs.
-        let orig_tables = read_table_directory(font_data)?;
+        let orig_tables = read_table_directory_at_face(font_data, self.face_index)?;
         let cmap_data = orig_tables
             .get(b"cmap")
             .copied()
@@ -269,7 +346,13 @@ impl PdfFontSubsetter {
             }
         }
 
-        subset_with_gid_set(font_data, &old_gid_set, &cp_to_old_gid, &self.opts)
+        subset_with_gid_set_at_face_mapped(
+            font_data,
+            self.face_index,
+            &old_gid_set,
+            &cp_to_old_gid,
+            &self.opts,
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -289,8 +372,8 @@ impl PdfFontSubsetter {
 // PdfSubsetResult
 // ---------------------------------------------------------------------------
 
-/// The output of a finalized [`PdfFontSubsetter`], combining the subset bytes
-/// and the associated statistics.
+/// The output of a finalized [`PdfFontSubsetter`], combining the subset bytes,
+/// the associated statistics, and the old ↔ new glyph-ID map.
 ///
 /// Created by [`PdfFontSubsetter::finalize_into_result`].
 #[derive(Debug, Clone)]
@@ -299,18 +382,29 @@ pub struct PdfSubsetResult {
     pub bytes: Vec<u8>,
     /// Statistics about the subset operation.
     pub stats: SubsetStats,
+    /// The glyph renumbering this subset performed.
+    ///
+    /// For a CIDFont written with `Identity-H` and `/CIDToGIDMap /Identity`,
+    /// [`SubsetGidMap::new_gid`] gives the CID to emit for each original glyph
+    /// and [`SubsetGidMap::new_to_old`] is the whole assignment indexed by CID.
+    pub gid_map: SubsetGidMap,
 }
 
 impl PdfFontSubsetter {
-    /// Produce a [`PdfSubsetResult`] combining subset bytes and statistics.
+    /// Produce a [`PdfSubsetResult`] combining subset bytes, statistics, and
+    /// the glyph-ID map.
     ///
-    /// This is a convenience wrapper around [`finalize`] that bundles the
-    /// output into a single struct.
+    /// This is a convenience wrapper around [`finalize_mapped`] that bundles
+    /// the output into a single struct.
     ///
-    /// [`finalize`]: PdfFontSubsetter::finalize
+    /// [`finalize_mapped`]: PdfFontSubsetter::finalize_mapped
     pub fn finalize_into_result(&self) -> Result<PdfSubsetResult, SubsetError> {
-        let (bytes, stats) = self.finalize()?;
-        Ok(PdfSubsetResult { bytes, stats })
+        let (bytes, stats, gid_map) = self.finalize_mapped()?;
+        Ok(PdfSubsetResult {
+            bytes,
+            stats,
+            gid_map,
+        })
     }
 
     /// Consume `self` and finalize, returning `(font_data, subset_bytes, stats)`.

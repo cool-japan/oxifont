@@ -226,6 +226,10 @@ fn cff2_rewrite_empty_remap_no_panic() {
 // ---------------------------------------------------------------------------
 
 /// Walk SFNT table directory looking for a CFF2 table.
+///
+/// Only reachable on the platforms whose font directories `find_cff2_font`
+/// scans; gated to match so the helper is not dead code elsewhere.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn is_cff2_font(data: &[u8]) -> bool {
     if data.len() < 12 {
         return false;

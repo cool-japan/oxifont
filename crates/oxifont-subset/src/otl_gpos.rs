@@ -6,10 +6,19 @@
 //! # Supported GPOS lookup types
 //! - Type 1: SinglePos (Format 1 and 2)
 //! - Type 2: PairPos (Format 1 and 2)
+//! - Type 3: CursivePos (Format 1)
 //! - Type 4: MarkBasePos (Format 1)
+//! - Type 5: MarkLigPos (Format 1)
 //! - Type 6: MarkMarkPos (Format 1)
-//! - Type 9: ExtensionPos (Format 1) — recursively rewrites the inner subtype
-//! - Types 3, 5, 7, 8: dropped (return `None`)
+//! - Type 7: ContextPos (Formats 1, 2 and 3) — see the crate-internal
+//!   `otl_context` module
+//! - Type 8: ChainContextPos (Formats 1, 2 and 3) — see the crate-internal
+//!   `otl_context` module
+//! - Type 9: ExtensionPos (Format 1) — recursively rewrites the inner subtype,
+//!   including contextual inner types
+//!
+//! A subtable is dropped (`None`) only when it is malformed or can no longer
+//! match anything under the subset.
 //!
 //! # ValueRecord
 //! ValueRecords contain no GID references — they are copied verbatim.
@@ -18,6 +27,7 @@
 
 use crate::layout::{read_coverage, remap_classdef, remap_coverage};
 use crate::otl::{rewrite_feature_list, rewrite_lookup_list_with, rewrite_script_list};
+use crate::otl_context::{parse_context_subtable, SubtableOut};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -38,11 +48,6 @@ fn r_u32(data: &[u8], offset: usize) -> Option<u32> {
 
 #[inline]
 fn w_u16(out: &mut Vec<u8>, v: u16) {
-    out.extend_from_slice(&v.to_be_bytes());
-}
-
-#[inline]
-fn w_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_be_bytes());
 }
 
@@ -670,14 +675,402 @@ fn rewrite_mark_pair_pos_f1(
 }
 
 // ---------------------------------------------------------------------------
-// GPOS Type 9: ExtensionPos
+// Anchor helpers shared by CursivePos and MarkLigPos
 // ---------------------------------------------------------------------------
 
-fn rewrite_extension_pos(
+/// Byte length of the Device / VariationIndex table at absolute `offset`.
+///
+/// ```text
+/// Device        { startSize: u16, endSize: u16, deltaFormat: u16, deltaValue: [u16] }
+/// VariationIndex{ deltaSetOuterIndex: u16, deltaSetInnerIndex: u16, deltaFormat: u16 }
+/// ```
+///
+/// `deltaFormat` 1/2/3 pack 2/4/8-bit deltas for sizes `startSize..=endSize`;
+/// `0x8000` marks a VariationIndex table, which has no delta array.
+fn device_table_size(data: &[u8], offset: usize) -> Option<usize> {
+    let format = r_u16(data, offset + 4)?;
+    match format {
+        1..=3 => {
+            let start = r_u16(data, offset)?;
+            let end = r_u16(data, offset + 2)?;
+            if end < start {
+                return None;
+            }
+            let count = (end - start) as usize + 1;
+            let per_u16 = 16usize >> format; // fmt1 → 8, fmt2 → 4, fmt3 → 2
+            Some(6 + count.div_ceil(per_u16) * 2)
+        }
+        0x8000 => Some(6),
+        _ => None,
+    }
+}
+
+/// Exact byte length of the Anchor table at absolute `offset`, including any
+/// Device / VariationIndex tables an Anchor format 3 points at.
+///
+/// Device offsets are measured from the Anchor start, so covering them keeps
+/// the anchor blob self-contained and its internal offsets valid after the
+/// anchor is relocated.
+fn anchor_total_size(data: &[u8], offset: usize) -> Option<usize> {
+    let format = r_u16(data, offset)?;
+    match format {
+        1 => Some(6),
+        2 => Some(8),
+        3 => {
+            let mut size = 10usize;
+            for field in [6usize, 8] {
+                let dev = r_u16(data, offset + field)? as usize;
+                if dev == 0 {
+                    continue;
+                }
+                if dev < 10 {
+                    // Would overlap the anchor header — malformed.
+                    return None;
+                }
+                size = size.max(dev + device_table_size(data, offset.checked_add(dev)?)?);
+            }
+            Some(size)
+        }
+        _ => None,
+    }
+}
+
+/// Copy the anchor tables referenced by `offsets` (relative to `base`).
+///
+/// A zero offset is NULL and stays NULL. Every other anchor is copied at its
+/// exact size ([`anchor_total_size`]) so Anchor format 3 keeps its Device
+/// tables. Returns `None` — dropping the whole subtable — if any non-NULL
+/// anchor is malformed or truncated, rather than fabricating a NULL anchor that
+/// would silently position nothing.
+fn collect_anchor_blobs(data: &[u8], base: usize, offsets: &[u16]) -> Option<Vec<Option<Vec<u8>>>> {
+    let mut out = Vec::with_capacity(offsets.len());
+    for &off in offsets {
+        if off == 0 {
+            out.push(None);
+            continue;
+        }
+        let abs = base.checked_add(off as usize)?;
+        let size = anchor_total_size(data, abs)?;
+        out.push(Some(data.get(abs..abs.checked_add(size)?)?.to_vec()));
+    }
+    Some(out)
+}
+
+/// Append anchor blobs to `out` and patch their `Offset16` slots (relative to
+/// `base_len`, the start of the structure that owns the offsets).
+fn append_anchor_blobs(
+    out: &mut Vec<u8>,
+    slot_positions: &[usize],
+    blobs: &[Option<Vec<u8>>],
+    base_len: usize,
+) {
+    for (slot, blob) in slot_positions.iter().zip(blobs.iter()) {
+        let Some(bytes) = blob else {
+            continue; // NULL anchor — the slot is already zero.
+        };
+        let off = out.len() - base_len;
+        patch_u16(out, *slot, off as u16);
+        out.extend_from_slice(bytes);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GPOS Type 3: CursivePos
+// ---------------------------------------------------------------------------
+
+/// One surviving cursive record: `(new_gid, entry_anchor, exit_anchor)`, where
+/// `None` is a NULL anchor.
+type CursiveEntry = (u16, Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// Type 3 — CursivePosFormat1
+///
+/// ```text
+/// posFormat: u16 = 1
+/// coverageOffset: Offset16
+/// entryExitCount: u16
+/// entryExitRecords: [{ entryAnchorOffset: Offset16, exitAnchorOffset: Offset16 }; n]
+/// ```
+///
+/// `entryExitRecords` is parallel to the coverage, and both anchor offsets are
+/// measured from the **subtable** start (unlike MarkArray anchors). Either may
+/// be NULL; NULL is preserved rather than turned into an offset-0 read.
+fn rewrite_cursive_pos(
     data: &[u8],
     offset: usize,
     gid_remap: &HashMap<u16, u16>,
 ) -> Option<Vec<u8>> {
+    let sub = data.get(offset..)?;
+    if r_u16(sub, 0)? != 1 {
+        return None;
+    }
+    let cov_off = r_u16(sub, 2)? as usize;
+    if cov_off == 0 {
+        return None;
+    }
+    let count = r_u16(sub, 4)? as usize;
+    let old_gids = read_coverage(data, offset + cov_off);
+    if old_gids.len() != count {
+        return None;
+    }
+
+    // Anchor offsets are relative to the subtable start.
+    let mut raw_offsets: Vec<u16> = Vec::with_capacity(count * 2);
+    for i in 0..count {
+        raw_offsets.push(r_u16(sub, 6 + i * 4)?);
+        raw_offsets.push(r_u16(sub, 6 + i * 4 + 2)?);
+    }
+    let blobs = collect_anchor_blobs(data, offset, &raw_offsets)?;
+
+    let mut entries: Vec<CursiveEntry> = Vec::new();
+    for (i, &old_gid) in old_gids.iter().enumerate() {
+        let Some(&new_gid) = gid_remap.get(&old_gid) else {
+            continue;
+        };
+        entries.push((new_gid, blobs[i * 2].clone(), blobs[i * 2 + 1].clone()));
+    }
+    if entries.is_empty() {
+        return None;
+    }
+    entries.sort_unstable_by_key(|e| e.0);
+    entries.dedup_by_key(|e| e.0);
+
+    let cov_gids: Vec<u16> = entries.iter().map(|e| e.0).collect();
+    let cov_bytes = crate::layout::write_coverage(&cov_gids);
+
+    let n = entries.len();
+    let mut out = Vec::new();
+    w_u16(&mut out, 1); // posFormat
+    let cov_off_pos = out.len();
+    w_u16(&mut out, 0); // coverageOffset placeholder
+    w_u16(&mut out, n as u16);
+    let rec_pos = out.len();
+    for _ in 0..n {
+        w_u16(&mut out, 0); // entryAnchorOffset
+        w_u16(&mut out, 0); // exitAnchorOffset
+    }
+    let cov_at = out.len() as u16;
+    patch_u16(&mut out, cov_off_pos, cov_at);
+    out.extend_from_slice(&cov_bytes);
+
+    let mut slots: Vec<usize> = Vec::with_capacity(n * 2);
+    let mut blob_list: Vec<Option<Vec<u8>>> = Vec::with_capacity(n * 2);
+    for (i, (_, entry, exit)) in entries.into_iter().enumerate() {
+        slots.push(rec_pos + i * 4);
+        blob_list.push(entry);
+        slots.push(rec_pos + i * 4 + 2);
+        blob_list.push(exit);
+    }
+    append_anchor_blobs(&mut out, &slots, &blob_list, 0);
+    Some(out)
+}
+
+// ---------------------------------------------------------------------------
+// GPOS Type 5: MarkLigPos
+// ---------------------------------------------------------------------------
+
+/// One LigatureAttach: `components[component][markClass] -> anchor blob`.
+type LigatureAttach = Vec<Vec<Option<Vec<u8>>>>;
+
+/// Parse a LigatureArray at absolute `lig_array_abs`.
+///
+/// ```text
+/// LigatureArray  { ligatureCount: u16, ligatureAttachOffsets: [Offset16; n] }
+/// LigatureAttach { componentCount: u16,
+///                  componentRecords: [[Offset16; markClassCount]; componentCount] }
+/// ```
+///
+/// LigatureAttach offsets are relative to the LigatureArray start; the anchor
+/// offsets inside each LigatureAttach are relative to that **LigatureAttach**.
+fn parse_ligature_array(
+    data: &[u8],
+    lig_array_abs: usize,
+    mark_class_count: usize,
+) -> Option<Vec<LigatureAttach>> {
+    let la = data.get(lig_array_abs..)?;
+    let lig_count = r_u16(la, 0)? as usize;
+    let mut out: Vec<LigatureAttach> = Vec::with_capacity(lig_count);
+    for i in 0..lig_count {
+        let attach_off = r_u16(la, 2 + i * 2)? as usize;
+        if attach_off == 0 {
+            out.push(Vec::new());
+            continue;
+        }
+        let attach_abs = lig_array_abs.checked_add(attach_off)?;
+        let at = data.get(attach_abs..)?;
+        let comp_count = r_u16(at, 0)? as usize;
+        let mut raw: Vec<u16> = Vec::with_capacity(comp_count * mark_class_count);
+        for c in 0..comp_count {
+            for k in 0..mark_class_count {
+                raw.push(r_u16(at, 2 + (c * mark_class_count + k) * 2)?);
+            }
+        }
+        let blobs = collect_anchor_blobs(data, attach_abs, &raw)?;
+        let mut comps: LigatureAttach = Vec::with_capacity(comp_count);
+        for c in 0..comp_count {
+            let start = c * mark_class_count;
+            comps.push(blobs[start..start + mark_class_count].to_vec());
+        }
+        out.push(comps);
+    }
+    Some(out)
+}
+
+/// Serialise one LigatureAttach.
+fn build_ligature_attach(comps: &LigatureAttach, mark_class_count: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    w_u16(&mut out, comps.len() as u16);
+    let slots_pos = out.len();
+    for _ in 0..(comps.len() * mark_class_count) {
+        w_u16(&mut out, 0);
+    }
+    let mut slots: Vec<usize> = Vec::with_capacity(comps.len() * mark_class_count);
+    let mut blobs: Vec<Option<Vec<u8>>> = Vec::with_capacity(comps.len() * mark_class_count);
+    for (c, comp) in comps.iter().enumerate() {
+        for (k, anc) in comp.iter().enumerate() {
+            slots.push(slots_pos + (c * mark_class_count + k) * 2);
+            blobs.push(anc.clone());
+        }
+    }
+    append_anchor_blobs(&mut out, &slots, &blobs, 0);
+    out
+}
+
+/// Type 5 — MarkLigPosFormat1
+///
+/// ```text
+/// posFormat: u16 = 1
+/// markCoverageOffset: Offset16
+/// ligatureCoverageOffset: Offset16
+/// markClassCount: u16
+/// markArrayOffset: Offset16
+/// ligatureArrayOffset: Offset16
+/// ```
+///
+/// Both coverages are pruned to the subset (their parallel MarkArray /
+/// LigatureArray entries follow), and NULL component anchors are preserved.
+fn rewrite_mark_lig_pos(
+    data: &[u8],
+    offset: usize,
+    gid_remap: &HashMap<u16, u16>,
+) -> Option<Vec<u8>> {
+    let sub = data.get(offset..)?;
+    if r_u16(sub, 0)? != 1 {
+        return None;
+    }
+    let mark_cov_off = r_u16(sub, 2)? as usize;
+    let lig_cov_off = r_u16(sub, 4)? as usize;
+    let mark_class_count = r_u16(sub, 6)? as usize;
+    let mark_array_off = r_u16(sub, 8)? as usize;
+    let lig_array_off = r_u16(sub, 10)? as usize;
+    if mark_cov_off == 0 || lig_cov_off == 0 || mark_array_off == 0 || lig_array_off == 0 {
+        return None;
+    }
+
+    // ---- Marks ----
+    let old_mark_gids = read_coverage(data, offset + mark_cov_off);
+    let mark_arr = parse_mark_array(data, offset + mark_array_off)?;
+    if mark_arr.len() != old_mark_gids.len() {
+        return None;
+    }
+    let mut marks: Vec<(u16, u16, Vec<u8>)> = Vec::new();
+    for (i, &old_gid) in old_mark_gids.iter().enumerate() {
+        let Some(&new_gid) = gid_remap.get(&old_gid) else {
+            continue;
+        };
+        let (mark_class, ref anc) = mark_arr[i];
+        marks.push((new_gid, mark_class, anc.clone()));
+    }
+    if marks.is_empty() {
+        return None;
+    }
+    marks.sort_unstable_by_key(|m| m.0);
+    marks.dedup_by_key(|m| m.0);
+
+    // ---- Ligatures ----
+    let old_lig_gids = read_coverage(data, offset + lig_cov_off);
+    let lig_arr = parse_ligature_array(data, offset + lig_array_off, mark_class_count)?;
+    if lig_arr.len() != old_lig_gids.len() {
+        return None;
+    }
+    let mut ligs: Vec<(u16, LigatureAttach)> = Vec::new();
+    for (i, &old_gid) in old_lig_gids.iter().enumerate() {
+        let Some(&new_gid) = gid_remap.get(&old_gid) else {
+            continue;
+        };
+        ligs.push((new_gid, lig_arr[i].clone()));
+    }
+    if ligs.is_empty() {
+        return None;
+    }
+    ligs.sort_unstable_by_key(|l| l.0);
+    ligs.dedup_by_key(|l| l.0);
+
+    // ---- MarkArray ----
+    let n_marks = marks.len();
+    let mut mark_array_out: Vec<u8> = Vec::new();
+    w_u16(&mut mark_array_out, n_marks as u16);
+    let mark_rec_pos = mark_array_out.len();
+    for _ in 0..n_marks {
+        w_u16(&mut mark_array_out, 0); // markClass
+        w_u16(&mut mark_array_out, 0); // markAnchorOffset
+    }
+    for (i, (_, mark_class, anc)) in marks.iter().enumerate() {
+        let off = mark_array_out.len() as u16;
+        patch_u16(&mut mark_array_out, mark_rec_pos + i * 4, *mark_class);
+        patch_u16(&mut mark_array_out, mark_rec_pos + i * 4 + 2, off);
+        mark_array_out.extend_from_slice(anc);
+    }
+
+    // ---- LigatureArray ----
+    let n_ligs = ligs.len();
+    let mut lig_array_out: Vec<u8> = Vec::new();
+    w_u16(&mut lig_array_out, n_ligs as u16);
+    let lig_off_pos = lig_array_out.len();
+    for _ in 0..n_ligs {
+        w_u16(&mut lig_array_out, 0);
+    }
+    for (i, (_, comps)) in ligs.iter().enumerate() {
+        let blob = build_ligature_attach(comps, mark_class_count);
+        let off = lig_array_out.len() as u16;
+        patch_u16(&mut lig_array_out, lig_off_pos + i * 2, off);
+        lig_array_out.extend_from_slice(&blob);
+    }
+
+    // ---- Assemble ----
+    let mark_cov = crate::layout::write_coverage(&marks.iter().map(|m| m.0).collect::<Vec<_>>());
+    let lig_cov = crate::layout::write_coverage(&ligs.iter().map(|l| l.0).collect::<Vec<_>>());
+    let header_size = 12u16;
+    let mark_cov_start = header_size;
+    let lig_cov_start = mark_cov_start + mark_cov.len() as u16;
+    let mark_array_start = lig_cov_start + lig_cov.len() as u16;
+    let lig_array_start = mark_array_start + mark_array_out.len() as u16;
+
+    let mut out = Vec::new();
+    w_u16(&mut out, 1); // posFormat
+    w_u16(&mut out, mark_cov_start);
+    w_u16(&mut out, lig_cov_start);
+    w_u16(&mut out, mark_class_count as u16);
+    w_u16(&mut out, mark_array_start);
+    w_u16(&mut out, lig_array_start);
+    out.extend_from_slice(&mark_cov);
+    out.extend_from_slice(&lig_cov);
+    out.extend_from_slice(&mark_array_out);
+    out.extend_from_slice(&lig_array_out);
+    Some(out)
+}
+
+// ---------------------------------------------------------------------------
+// GPOS Type 9: ExtensionPos
+// ---------------------------------------------------------------------------
+
+/// Recursively rewrites the inner subtable and re-emits the wrapper.
+/// Contextual inner types are carried through as [`SubtableOut::Extension`] so
+/// that their `lookupListIndex` fixup still runs in the LookupList pass.
+fn rewrite_extension_pos(
+    data: &[u8],
+    offset: usize,
+    gid_remap: &HashMap<u16, u16>,
+) -> Option<SubtableOut> {
     let sub = data.get(offset..)?;
     let format = r_u16(sub, 0)?;
     if format != 1 {
@@ -689,45 +1082,67 @@ fn rewrite_extension_pos(
         return None;
     }
     let ext_offset = r_u32(sub, 4)? as usize;
-    let inner_abs = offset + ext_offset;
-    let inner_bytes = rewrite_gpos_subtable(data, inner_abs, ext_type, gid_remap)?;
+    let inner_abs = offset.checked_add(ext_offset)?;
+    let inner = rewrite_gpos_subtable_ir(data, inner_abs, ext_type, gid_remap)?;
 
-    // Rebuild extension wrapper: format(2) + extLookupType(2) + extOffset(Offset32)
-    let inner_offset: u32 = 8;
-    let mut out = Vec::with_capacity(8 + inner_bytes.len());
-    w_u16(&mut out, 1);
-    w_u16(&mut out, ext_type);
-    w_u32(&mut out, inner_offset);
-    out.extend_from_slice(&inner_bytes);
-    Some(out)
+    Some(SubtableOut::Extension {
+        ext_type,
+        inner: Box::new(inner),
+    })
 }
 
 // ---------------------------------------------------------------------------
 // GPOS subtable dispatcher
 // ---------------------------------------------------------------------------
 
+/// Dispatch to the correct GPOS subtable handler by `lookup_type`, returning
+/// the intermediate [`SubtableOut`] form (contextual subtables still carry
+/// original `lookupListIndex` values).
+pub(crate) fn rewrite_gpos_subtable_ir(
+    data: &[u8],
+    offset: usize,
+    lookup_type: u16,
+    gid_remap: &HashMap<u16, u16>,
+) -> Option<SubtableOut> {
+    match lookup_type {
+        1 => rewrite_single_pos(data, offset, gid_remap).map(SubtableOut::Bytes),
+        2 => rewrite_pair_pos(data, offset, gid_remap).map(SubtableOut::Bytes),
+        3 => rewrite_cursive_pos(data, offset, gid_remap).map(SubtableOut::Bytes),
+        4 => rewrite_mark_pair_pos_f1(data, offset, gid_remap).map(SubtableOut::Bytes),
+        5 => rewrite_mark_lig_pos(data, offset, gid_remap).map(SubtableOut::Bytes),
+        6 => rewrite_mark_pair_pos_f1(data, offset, gid_remap).map(SubtableOut::Bytes),
+        7 => parse_context_subtable(data, offset, gid_remap, false).map(SubtableOut::Context),
+        8 => parse_context_subtable(data, offset, gid_remap, true).map(SubtableOut::Context),
+        9 => rewrite_extension_pos(data, offset, gid_remap),
+        _ => None,
+    }
+}
+
 /// Dispatch to the correct GPOS subtable handler by `lookup_type`.
 ///
 /// Returns `None` if:
-/// - the lookup type is unsupported (3, 5, 7, 8),
+/// - the lookup type is unknown, or
 /// - the subtable is malformed, or
-/// - all GIDs in the subtable were removed from the subset.
+/// - the subtable can no longer match anything under the subset.
+///
+/// Contextual lookups (types 7/8, and 7/8 wrapped in a type-9 Extension) embed
+/// `lookupListIndex` values that only the LookupList rewriter can renumber.
+/// This standalone entry point has no LookupList context, so it emits those
+/// indices unchanged — use it for single-subtable inspection, not for building
+/// a subset table (the full path goes through [`rewrite_gpos`]).
 pub fn rewrite_gpos_subtable(
     data: &[u8],
     offset: usize,
     lookup_type: u16,
     gid_remap: &HashMap<u16, u16>,
 ) -> Option<Vec<u8>> {
-    match lookup_type {
-        1 => rewrite_single_pos(data, offset, gid_remap),
-        2 => rewrite_pair_pos(data, offset, gid_remap),
-        // Type 3 (CursivePos), 5 (MarkLigPos), 7 (ContextPos), 8 (ChainContextPos) — drop.
-        3 | 5 | 7 | 8 => None,
-        4 => rewrite_mark_pair_pos_f1(data, offset, gid_remap),
-        6 => rewrite_mark_pair_pos_f1(data, offset, gid_remap),
-        9 => rewrite_extension_pos(data, offset, gid_remap),
-        _ => None,
-    }
+    rewrite_gpos_subtable_ir(data, offset, lookup_type, gid_remap).map(|st| st.serialize(None))
+}
+
+/// Whether a GPOS lookup type counts towards
+/// `SubsetStats::dropped_context_subtables` when its subtable is dropped.
+fn gpos_is_context_type(lookup_type: u16) -> bool {
+    matches!(lookup_type, 3 | 5 | 7 | 8)
 }
 
 // ---------------------------------------------------------------------------
@@ -740,16 +1155,25 @@ pub fn rewrite_gpos_subtable(
 ///
 /// GPOS v1.1 FeatureVariations are dropped; the rebuilt table uses v1.0.
 pub fn rewrite_gpos(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Vec<u8> {
+    rewrite_gpos_counted(table, gid_remap).0
+}
+
+/// Like [`rewrite_gpos`] but also returns the number of contextual/chaining
+/// subtables that were dropped so the subsetter can record the degradation.
+pub(crate) fn rewrite_gpos_counted(
+    table: &[u8],
+    gid_remap: &HashMap<u16, u16>,
+) -> (Vec<u8>, usize) {
     if table.len() < 10 {
-        return table.to_vec();
+        return (table.to_vec(), 0);
     }
     match try_rewrite_gpos(table, gid_remap) {
-        Some(v) => v,
-        None => table.to_vec(),
+        Some(pair) => pair,
+        None => (table.to_vec(), 0),
     }
 }
 
-fn try_rewrite_gpos(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Option<Vec<u8>> {
+fn try_rewrite_gpos(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Option<(Vec<u8>, usize)> {
     let major = r_u16(table, 0)?;
     if major != 1 {
         return None;
@@ -760,8 +1184,13 @@ fn try_rewrite_gpos(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Option<Vec<u
     let ll_offset = r_u16(table, 8)? as usize;
 
     // ---- Step 1: Rewrite LookupList ----
-    let (new_ll_bytes, lk_index_map) =
-        rewrite_lookup_list_with(table, ll_offset, gid_remap, rewrite_gpos_subtable);
+    let (new_ll_bytes, lk_index_map, dropped_context) = rewrite_lookup_list_with(
+        table,
+        ll_offset,
+        gid_remap,
+        rewrite_gpos_subtable_ir,
+        gpos_is_context_type,
+    );
 
     // ---- Step 2: Rewrite FeatureList ----
     let (new_fl_bytes, feat_index_map) = rewrite_feature_list(table, fl_offset, &lk_index_map);
@@ -789,5 +1218,5 @@ fn try_rewrite_gpos(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Option<Vec<u
     out.extend_from_slice(&new_fl_bytes);
     out.extend_from_slice(&new_ll_bytes);
 
-    Some(out)
+    Some((out, dropped_context))
 }

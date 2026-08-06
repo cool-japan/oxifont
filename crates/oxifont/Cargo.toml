@@ -18,6 +18,7 @@ woff1  = ["dep:oxifont-webfont", "oxifont-webfont/woff1"]
 woff2  = ["dep:oxifont-webfont", "oxifont-webfont/woff2"]
 subset = ["dep:oxifont-subset"]
 discovery = ["dep:oxifont-discovery"]
+hinting = ["dep:oxifont-hinting"]
 bundled-noto        = ["dep:oxifont-bundled", "oxifont-bundled/bundled-noto"]
 bundled-noto-serif  = ["dep:oxifont-bundled", "oxifont-bundled/bundled-noto-serif"]
 bundled-noto-emoji  = ["dep:oxifont-bundled", "oxifont-bundled/bundled-noto-emoji"]
@@ -55,6 +56,10 @@ optional = true
 workspace = true
 optional = true
 
+[dependencies.oxifont-hinting]
+workspace = true
+optional = true
+
 [dev-dependencies.oxifont-webfont]
 path = "../oxifont-webfont"
 features = ["woff2"]
@@ -67,3 +72,19 @@ path = "../oxifont-parser"
 
 [dev-dependencies.oxifont-discovery]
 path = "../oxifont-discovery"
+
+# `discover_query_match` needs no extra features (default `pure` + `discovery`
+# cover it) and is left to plain auto-discovery. The examples below need
+# features that are off by default, so `cargo build --examples` /
+# `cargo run --example` skip them unless those features are enabled.
+[[example]]
+name = "parse_metrics_outline"
+required-features = ["bundled-noto"]
+
+[[example]]
+name = "subset_woff2_roundtrip"
+required-features = ["subset", "woff2", "bundled-noto"]
+
+[[example]]
+name = "hinting_at_ppem"
+required-features = ["hinting", "bundled-noto"]

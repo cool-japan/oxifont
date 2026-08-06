@@ -8,11 +8,11 @@ use crate::tables::SubsetError;
 // ---------------------------------------------------------------------------
 
 /// Entry format from the DeltaSetIndexMap header word.
-struct EntryFormat {
+pub(crate) struct EntryFormat {
     /// Number of bits for the inner index (0..15 → 1..16 bits).
-    inner_bit_count: u8,
+    pub(crate) inner_bit_count: u8,
     /// Number of bytes per entry (1..4).
-    entry_size: u8,
+    pub(crate) entry_size: u8,
 }
 
 impl EntryFormat {
@@ -37,7 +37,7 @@ impl EntryFormat {
     /// entryFormat (u16) bit fields:
     /// - bits 0–3: `INNER_INDEX_BIT_COUNT_MASK` = low (inner+1) bits are inner
     /// - bits 4–7: `MAP_ENTRY_SIZE_MASK` = (entry_bytes - 1)
-    fn from_entry_format(ef: u16) -> Self {
+    pub(crate) fn from_entry_format(ef: u16) -> Self {
         // Bits 0-3: inner bit count minus 1.
         let inner_minus_1 = (ef & 0x000F) as u8;
         // Bits 4-7: entry size minus 1 (in bytes).
@@ -50,7 +50,7 @@ impl EntryFormat {
 }
 
 /// Read a (outerIndex, innerIndex) pair from a DeltaSetIndexMap entry.
-fn read_entry(entry_bytes: &[u8], inner_bit_count: u8) -> (u16, u16) {
+pub(crate) fn read_entry(entry_bytes: &[u8], inner_bit_count: u8) -> (u16, u16) {
     // Combine bytes into a single integer (big-endian).
     let mut value: u32 = 0;
     for &b in entry_bytes {
@@ -77,14 +77,19 @@ fn write_entry(outer: u16, inner: u16, inner_bit_count: u8, entry_size: u8) -> V
 // DeltaSetIndexMap format 0 reader
 // ---------------------------------------------------------------------------
 
-struct DeltaSetMap {
+pub(crate) struct DeltaSetMap {
     /// Entry format word.
-    entry_format: u16,
+    pub(crate) entry_format: u16,
     /// All (outerIndex, innerIndex) entries, indexed by GID.
-    entries: Vec<(u16, u16)>,
+    pub(crate) entries: Vec<(u16, u16)>,
 }
 
-fn read_delta_set_map(data: &[u8]) -> Option<DeltaSetMap> {
+/// Read a DeltaSetIndexMap **format 0** table (`uint16 entryFormat`,
+/// `uint16 mapCount`, then `mapCount` packed entries).
+///
+/// Format 1 (a `uint32 mapCount`) is not handled here; callers that must accept
+/// it check the leading format byte themselves.
+pub(crate) fn read_delta_set_map(data: &[u8]) -> Option<DeltaSetMap> {
     if data.len() < 4 {
         return None;
     }

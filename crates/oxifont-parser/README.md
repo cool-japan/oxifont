@@ -11,7 +11,7 @@ Font bytes are held in an `Arc<[u8]>`, making `ParsedFace` cheaply `Clone`, `Sen
 
 ```toml
 [dependencies]
-oxifont-parser = "0.2.1"
+oxifont-parser = "0.2.2"
 ```
 
 ## Quick Start

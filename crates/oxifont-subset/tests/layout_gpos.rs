@@ -443,15 +443,15 @@ fn test_gpos_pairpos_f1_empty_set_dropped() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_gpos_type3_dropped() {
-    // Build a fake CursivePos subtable (format 1); the handler returns None for type 3.
+fn test_gpos_type3_empty_dropped() {
+    // CursivePos (type 3) is now remapped (see tests/advanced_lookups.rs), but a
+    // subtable with zero entryExitRecords positions nothing and must be dropped.
     // After lookup is dropped, rewrite_gpos returns a valid GPOS with 0 lookups.
     let fake_subtable: Vec<u8> = {
         let mut v = Vec::new();
         v.extend_from_slice(&be16(1)); // format
-        v.extend_from_slice(&be16(6)); // coverageOffset (bogus, won't be parsed)
-        v.extend_from_slice(&be16(0)); // entryExitCount
-                                       // No coverage or exit records needed — type 3 is immediately dropped.
+        v.extend_from_slice(&be16(6)); // coverageOffset → an empty Coverage
+        v.extend_from_slice(&be16(0)); // entryExitCount = 0 → nothing to position
         v
     };
 

@@ -10,9 +10,17 @@
 //! - Type 2: MultipleSubst (Format 1)
 //! - Type 3: AlternateSubst (Format 1)
 //! - Type 4: LigatureSubst (Format 1)
-//! - Type 7: ExtensionSubst (Format 1) — recursively rewrites the inner subtype
-//! - Types 5, 6, 8: dropped (return `None`); parent lookup is dropped if all
-//!   subtables drop.
+//! - Type 5: ContextSubst (Formats 1, 2 and 3) — see the crate-internal
+//!   `otl_context` module
+//! - Type 6: ChainContextSubst (Formats 1, 2 and 3) — see the crate-internal
+//!   `otl_context` module
+//! - Type 7: ExtensionSubst (Format 1) — recursively rewrites the inner subtype,
+//!   including contextual inner types
+//! - Type 8: ReverseChainSingleSubst (Format 1)
+//!
+//! A subtable is dropped (`None`) only when it is malformed or can no longer
+//! match anything under the subset; the parent lookup is dropped if all of its
+//! subtables drop.
 //!
 //! # GSUB/GPOS v1.1 / FeatureVariations
 //! When the input has `minorVersion == 1` the FeatureVariations block references
@@ -20,7 +28,8 @@
 //! is emitted with `minorVersion = 0` and the FeatureVariations block is dropped.
 //! (Full FeatureVariations rewrite is deferred.)
 
-use crate::layout::{read_coverage, write_coverage};
+use crate::layout::{read_coverage, remap_coverage, write_coverage};
+use crate::otl_context::{parse_context_subtable, SubtableOut};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -41,11 +50,6 @@ fn r_u32(data: &[u8], offset: usize) -> Option<u32> {
 
 #[inline]
 fn w_u16(out: &mut Vec<u8>, v: u16) {
-    out.extend_from_slice(&v.to_be_bytes());
-}
-
-#[inline]
-fn w_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_be_bytes());
 }
 
@@ -519,13 +523,16 @@ fn rewrite_ligature_subst(
 
 /// Type 7 — ExtensionSubst Format 1
 ///
-/// Recursively rewrites the inner subtable for `extensionLookupType`.
-/// If `extensionLookupType` is 7 (which the spec forbids), return `None`.
+/// Recursively rewrites the inner subtable for `extensionLookupType` and
+/// re-emits the wrapper. Contextual inner types are carried through as
+/// [`SubtableOut::Extension`] so that their `lookupListIndex` fixup still runs
+/// in the LookupList pass. If `extensionLookupType` is 7 (which the spec
+/// forbids), return `None`.
 fn rewrite_extension_subst(
     data: &[u8],
     offset: usize,
     gid_remap: &HashMap<u16, u16>,
-) -> Option<Vec<u8>> {
+) -> Option<SubtableOut> {
     let sub = data.get(offset..)?;
     let format = r_u16(sub, 0)?;
     if format != 1 {
@@ -539,42 +546,196 @@ fn rewrite_extension_subst(
     let ext_offset = r_u32(sub, 4)? as usize;
 
     // Inner subtable absolute offset within `data`.
-    let inner_abs = offset + ext_offset;
-    let inner_bytes = rewrite_gsub_subtable(data, inner_abs, ext_type, gid_remap)?;
+    let inner_abs = offset.checked_add(ext_offset)?;
+    let inner = rewrite_gsub_subtable_ir(data, inner_abs, ext_type, gid_remap)?;
 
-    // Rebuild extension wrapper: format(2) + extLookupType(2) + extOffset(Offset32=8)
-    // Inner subtable follows immediately.
-    let inner_offset: u32 = 8; // header is 8 bytes
-    let mut out = Vec::with_capacity(8 + inner_bytes.len());
-    w_u16(&mut out, 1); // format
-    w_u16(&mut out, ext_type);
-    w_u32(&mut out, inner_offset);
-    out.extend_from_slice(&inner_bytes);
+    Some(SubtableOut::Extension {
+        ext_type,
+        inner: Box::new(inner),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Type 8: ReverseChainSingleSubst
+// ---------------------------------------------------------------------------
+
+/// Type 8 — ReverseChainSingleSubstFormat1
+///
+/// ```text
+/// substFormat: u16 = 1
+/// coverageOffset: Offset16
+/// backtrackGlyphCount: u16
+/// backtrackCoverageOffsets: [Offset16; backtrackGlyphCount]
+/// lookaheadGlyphCount: u16
+/// lookaheadCoverageOffsets: [Offset16; lookaheadGlyphCount]
+/// glyphCount: u16
+/// substituteGlyphIDs: [u16; glyphCount]   // parallel to coverage
+/// ```
+///
+/// The substitute array is parallel to the input coverage, so an entry only
+/// survives when **both** its covered glyph and its substitute are still in the
+/// subset (there is no GSUB closure pass in this crate, so a substitute that
+/// was not requested is simply not reachable). Backtrack / lookahead coverages
+/// are remapped; if any of them empties out the rule can never match and the
+/// whole subtable is dropped.
+fn rewrite_reverse_chain_single_subst(
+    data: &[u8],
+    offset: usize,
+    gid_remap: &HashMap<u16, u16>,
+) -> Option<Vec<u8>> {
+    let sub = data.get(offset..)?;
+    if r_u16(sub, 0)? != 1 {
+        return None;
+    }
+    let cov_off = r_u16(sub, 2)? as usize;
+    if cov_off == 0 {
+        return None;
+    }
+
+    let mut pos = 4usize;
+    let back = read_coverage_run(data, offset, sub, &mut pos, gid_remap)?;
+    let ahead = read_coverage_run(data, offset, sub, &mut pos, gid_remap)?;
+
+    let glyph_count = r_u16(sub, pos)? as usize;
+    let subst_pos = pos + 2;
+    let old_gids = read_coverage(data, offset + cov_off);
+    if old_gids.len() != glyph_count {
+        return None;
+    }
+
+    let mut pairs: Vec<(u16, u16)> = Vec::new();
+    for (i, &old_gid) in old_gids.iter().enumerate() {
+        let old_subst = r_u16(sub, subst_pos + i * 2)?;
+        let (Some(&new_gid), Some(&new_subst)) =
+            (gid_remap.get(&old_gid), gid_remap.get(&old_subst))
+        else {
+            continue;
+        };
+        pairs.push((new_gid, new_subst));
+    }
+    if pairs.is_empty() {
+        return None;
+    }
+    pairs.sort_unstable_by_key(|&(g, _)| g);
+    pairs.dedup_by_key(|p| p.0);
+
+    let cov_gids: Vec<u16> = pairs.iter().map(|&(g, _)| g).collect();
+    let cov_bytes = write_coverage(&cov_gids);
+
+    let mut out = Vec::new();
+    w_u16(&mut out, 1); // substFormat
+    let cov_off_pos = out.len();
+    w_u16(&mut out, 0); // coverageOffset placeholder
+    w_u16(&mut out, back.len() as u16);
+    let back_pos = out.len();
+    for _ in &back {
+        w_u16(&mut out, 0);
+    }
+    w_u16(&mut out, ahead.len() as u16);
+    let ahead_pos = out.len();
+    for _ in &ahead {
+        w_u16(&mut out, 0);
+    }
+    w_u16(&mut out, pairs.len() as u16);
+    for &(_, s) in &pairs {
+        w_u16(&mut out, s);
+    }
+
+    let cov_at = out.len() as u16;
+    patch_u16(&mut out, cov_off_pos, cov_at);
+    out.extend_from_slice(&cov_bytes);
+    for (i, blob) in back.iter().enumerate() {
+        let off = out.len() as u16;
+        patch_u16(&mut out, back_pos + i * 2, off);
+        out.extend_from_slice(blob);
+    }
+    for (i, blob) in ahead.iter().enumerate() {
+        let off = out.len() as u16;
+        patch_u16(&mut out, ahead_pos + i * 2, off);
+        out.extend_from_slice(blob);
+    }
     Some(out)
+}
+
+/// Read a `count` + `coverageOffsets[count]` run at `*pos` within `sub`
+/// (= `data[offset..]`), remapping each coverage. `None` when any coverage
+/// empties out under the subset. Advances `*pos` past the run.
+fn read_coverage_run(
+    data: &[u8],
+    offset: usize,
+    sub: &[u8],
+    pos: &mut usize,
+    gid_remap: &HashMap<u16, u16>,
+) -> Option<Vec<Vec<u8>>> {
+    let count = r_u16(sub, *pos)? as usize;
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let cov_off = r_u16(sub, *pos + 2 + i * 2)? as usize;
+        if cov_off == 0 {
+            return None;
+        }
+        let (bytes, new_gids) = remap_coverage(data, offset + cov_off, gid_remap);
+        if new_gids.is_empty() {
+            return None;
+        }
+        out.push(bytes);
+    }
+    *pos += 2 + count * 2;
+    Some(out)
+}
+
+/// Dispatch to the correct GSUB subtable handler by `lookup_type`, returning
+/// the intermediate [`SubtableOut`] form (contextual subtables still carry
+/// original `lookupListIndex` values).
+///
+/// Returns `None` if:
+/// - the lookup type is unknown, or
+/// - the subtable is malformed, or
+/// - the subtable can no longer match anything under the subset.
+pub(crate) fn rewrite_gsub_subtable_ir(
+    data: &[u8],
+    offset: usize,
+    lookup_type: u16,
+    gid_remap: &HashMap<u16, u16>,
+) -> Option<SubtableOut> {
+    match lookup_type {
+        1 => rewrite_single_subst(data, offset, gid_remap).map(SubtableOut::Bytes),
+        2 => rewrite_multiple_subst(data, offset, gid_remap).map(SubtableOut::Bytes),
+        3 => rewrite_alternate_subst(data, offset, gid_remap).map(SubtableOut::Bytes),
+        4 => rewrite_ligature_subst(data, offset, gid_remap).map(SubtableOut::Bytes),
+        5 => parse_context_subtable(data, offset, gid_remap, false).map(SubtableOut::Context),
+        6 => parse_context_subtable(data, offset, gid_remap, true).map(SubtableOut::Context),
+        7 => rewrite_extension_subst(data, offset, gid_remap),
+        8 => rewrite_reverse_chain_single_subst(data, offset, gid_remap).map(SubtableOut::Bytes),
+        _ => None,
+    }
 }
 
 /// Dispatch to the correct GSUB subtable handler by `lookup_type`.
 ///
 /// Returns `None` if:
-/// - the lookup type is unsupported (5, 6, 8),
+/// - the lookup type is unknown, or
 /// - the subtable is malformed, or
-/// - all GIDs in the subtable were removed from the subset.
+/// - the subtable can no longer match anything under the subset.
+///
+/// Contextual lookups (types 5/6, and 5/6 wrapped in a type-7 Extension) embed
+/// `lookupListIndex` values that only the LookupList rewriter can renumber.
+/// This standalone entry point has no LookupList context, so it emits those
+/// indices unchanged — use it for single-subtable inspection, not for building
+/// a subset table (the full path goes through [`rewrite_gsub`]).
 pub fn rewrite_gsub_subtable(
     data: &[u8],
     offset: usize,
     lookup_type: u16,
     gid_remap: &HashMap<u16, u16>,
 ) -> Option<Vec<u8>> {
-    match lookup_type {
-        1 => rewrite_single_subst(data, offset, gid_remap),
-        2 => rewrite_multiple_subst(data, offset, gid_remap),
-        3 => rewrite_alternate_subst(data, offset, gid_remap),
-        4 => rewrite_ligature_subst(data, offset, gid_remap),
-        // Types 5 (ContextSubst), 6 (ChainContextSubst), 8 (ReverseChain) — drop.
-        5 | 6 | 8 => None,
-        7 => rewrite_extension_subst(data, offset, gid_remap),
-        _ => None,
-    }
+    rewrite_gsub_subtable_ir(data, offset, lookup_type, gid_remap).map(|st| st.serialize(None))
+}
+
+/// Whether a GSUB lookup type counts towards
+/// `SubsetStats::dropped_context_subtables` when its subtable is dropped.
+pub(crate) fn gsub_is_context_type(lookup_type: u16) -> bool {
+    matches!(lookup_type, 5 | 6 | 8)
 }
 
 // ---------------------------------------------------------------------------
@@ -587,7 +748,9 @@ struct RewrittenLookup {
     lookup_type: u16,
     lookup_flag: u16,
     mark_filtering_set: Option<u16>,
-    subtable_bytes: Vec<Vec<u8>>,
+    /// Subtables in intermediate form; contextual ones are serialised only once
+    /// the final old→new lookup index map is known.
+    subtables: Vec<SubtableOut>,
 }
 
 /// Parse a LookupList, rewrite subtables via `dispatch`, and return:
@@ -597,32 +760,42 @@ struct RewrittenLookup {
 /// A lookup is dropped if all its subtables return `None`.
 ///
 /// `dispatch` is called with `(table, abs_subtable_offset, lookup_type, gid_remap)`
-/// and should return the rewritten subtable bytes or `None` to drop.
+/// and should return the rewritten subtable in intermediate form, or `None` to
+/// drop it. Subtables are serialised only after the whole LookupList has been
+/// processed, so contextual `lookupListIndex` values are always written with
+/// the final numbering — there is no path that can emit a stale index.
+///
+/// `is_context_type` reports whether a dropped subtable of that lookup type
+/// should be counted as lost contextual shaping.
 pub(crate) fn rewrite_lookup_list_with<F>(
     table: &[u8],
     ll_offset: usize,
     gid_remap: &HashMap<u16, u16>,
     dispatch: F,
-) -> (Vec<u8>, Vec<Option<u16>>)
+    is_context_type: fn(u16) -> bool,
+) -> (Vec<u8>, Vec<Option<u16>>, usize)
 where
-    F: Fn(&[u8], usize, u16, &HashMap<u16, u16>) -> Option<Vec<u8>>,
+    F: Fn(&[u8], usize, u16, &HashMap<u16, u16>) -> Option<SubtableOut>,
 {
     let ll_data = match table.get(ll_offset..) {
         Some(d) => d,
-        None => return (build_empty_lookup_list(), vec![]),
+        None => return (build_empty_lookup_list(), vec![], 0),
     };
 
     let lookup_count = match r_u16(ll_data, 0) {
         Some(c) => c as usize,
-        None => return (build_empty_lookup_list(), vec![]),
+        None => return (build_empty_lookup_list(), vec![], 0),
     };
 
     if ll_data.len() < 2 + lookup_count * 2 {
-        return (build_empty_lookup_list(), vec![]);
+        return (build_empty_lookup_list(), vec![], 0);
     }
 
     let mut index_map: Vec<Option<u16>> = Vec::with_capacity(lookup_count);
     let mut rewritten: Vec<RewrittenLookup> = Vec::new();
+    // Count of contextual/chaining subtables dropped (formats 1/2, or whose
+    // coverage emptied out) so callers can surface the shaping degradation.
+    let mut dropped_context_subtables = 0usize;
 
     for i in 0..lookup_count {
         let raw_off = match r_u16(ll_data, 2 + i * 2) {
@@ -676,7 +849,7 @@ where
             None
         };
 
-        let mut surviving_subtables: Vec<Vec<u8>> = Vec::new();
+        let mut surviving_subtables: Vec<SubtableOut> = Vec::new();
         for j in 0..sub_count {
             let st_off = match r_u16(lk_data, 6 + j * 2) {
                 Some(o) => o as usize,
@@ -684,8 +857,13 @@ where
             };
             // Subtable offset is relative to Lookup start; absolute = ll_offset + raw_off + st_off.
             let abs_st_off = ll_offset + raw_off + st_off;
-            if let Some(st_bytes) = dispatch(table, abs_st_off, lookup_type, gid_remap) {
-                surviving_subtables.push(st_bytes);
+            match dispatch(table, abs_st_off, lookup_type, gid_remap) {
+                Some(st) => surviving_subtables.push(st),
+                None => {
+                    if is_context_type(lookup_type) {
+                        dropped_context_subtables += 1;
+                    }
+                }
             }
         }
 
@@ -698,26 +876,36 @@ where
                 lookup_type,
                 lookup_flag,
                 mark_filtering_set,
-                subtable_bytes: surviving_subtables,
+                subtables: surviving_subtables,
             });
         }
     }
 
-    let ll_bytes = build_lookup_list_bytes(&rewritten);
-    (ll_bytes, index_map)
+    // Phase 2: serialise now that the old→new lookup index map is fully known,
+    // so contextual subtables write final `lookupListIndex` values (records
+    // whose target lookup was removed are pruned).
+    let ll_bytes = build_lookup_list_bytes(&rewritten, &index_map);
+    (ll_bytes, index_map, dropped_context_subtables)
 }
 
 /// Parse the GSUB LookupList, rewrite subtables, and return:
 /// - the bytes for the new LookupList (and embedded lookups/subtables),
-/// - the index map `old_lookup_idx -> Option<new_idx>`.
+/// - the index map `old_lookup_idx -> Option<new_idx>`,
+/// - the count of dropped contextual/chaining subtables.
 ///
 /// A lookup is dropped if all its subtables return `None`.
 fn rewrite_lookup_list(
     table: &[u8],
     ll_offset: usize,
     gid_remap: &HashMap<u16, u16>,
-) -> (Vec<u8>, Vec<Option<u16>>) {
-    rewrite_lookup_list_with(table, ll_offset, gid_remap, rewrite_gsub_subtable)
+) -> (Vec<u8>, Vec<Option<u16>>, usize) {
+    rewrite_lookup_list_with(
+        table,
+        ll_offset,
+        gid_remap,
+        rewrite_gsub_subtable_ir,
+        gsub_is_context_type,
+    )
 }
 
 /// Build an empty LookupList (lookupCount = 0).
@@ -743,7 +931,7 @@ fn build_empty_lookup_list() -> Vec<u8> {
 ///   [markFilteringSet: u16]
 ///   subtable data...
 /// ```
-fn build_lookup_list_bytes(lookups: &[RewrittenLookup]) -> Vec<u8> {
+fn build_lookup_list_bytes(lookups: &[RewrittenLookup], index_map: &[Option<u16>]) -> Vec<u8> {
     let n = lookups.len();
     // LookupList header: 2 + n*2
     let ll_header_size = 2 + n * 2;
@@ -752,7 +940,7 @@ fn build_lookup_list_bytes(lookups: &[RewrittenLookup]) -> Vec<u8> {
     // We'll build all Lookup blobs, then lay out the LookupList.
     let mut lookup_blobs: Vec<Vec<u8>> = Vec::with_capacity(n);
     for lk in lookups {
-        lookup_blobs.push(build_lookup_bytes(lk));
+        lookup_blobs.push(build_lookup_bytes(lk, index_map));
     }
 
     let mut out: Vec<u8> = Vec::new();
@@ -784,8 +972,13 @@ fn build_lookup_list_bytes(lookups: &[RewrittenLookup]) -> Vec<u8> {
 ///
 /// The subtable data is embedded directly after the Lookup header so that
 /// all offsets (Offset16 from Lookup start) remain ≤ 65535.
-fn build_lookup_bytes(lk: &RewrittenLookup) -> Vec<u8> {
-    let sub_count = lk.subtable_bytes.len();
+fn build_lookup_bytes(lk: &RewrittenLookup, index_map: &[Option<u16>]) -> Vec<u8> {
+    let subtable_bytes: Vec<Vec<u8>> = lk
+        .subtables
+        .iter()
+        .map(|st| st.serialize(Some(index_map)))
+        .collect();
+    let sub_count = subtable_bytes.len();
     // Header size: lookupType(2) + lookupFlag(2) + subTableCount(2) +
     //              subtableOffsets[n](2*n) + [markFilteringSet(2)]
     let has_mfs = lk.mark_filtering_set.is_some();
@@ -807,7 +1000,7 @@ fn build_lookup_bytes(lk: &RewrittenLookup) -> Vec<u8> {
 
     // Append subtable data and record offsets (relative to Lookup start).
     let mut st_offs: Vec<u16> = Vec::with_capacity(sub_count);
-    for st in &lk.subtable_bytes {
+    for st in &subtable_bytes {
         st_offs.push(out.len() as u16);
         out.extend_from_slice(st);
     }
@@ -1214,16 +1407,26 @@ fn build_script_list_bytes(scripts: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
 ///
 /// GSUB v1.1 FeatureVariations are dropped; the rebuilt table uses v1.0.
 pub fn rewrite_gsub(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Vec<u8> {
+    rewrite_gsub_counted(table, gid_remap).0
+}
+
+/// Like [`rewrite_gsub`] but also returns the number of contextual/chaining
+/// subtables that were dropped (formats 1/2, extension-wrapped, or coverage
+/// emptied) so the subsetter can record the shaping degradation in stats.
+pub(crate) fn rewrite_gsub_counted(
+    table: &[u8],
+    gid_remap: &HashMap<u16, u16>,
+) -> (Vec<u8>, usize) {
     if table.len() < 10 {
-        return table.to_vec();
+        return (table.to_vec(), 0);
     }
     match try_rewrite_gsub(table, gid_remap) {
-        Some(v) => v,
-        None => table.to_vec(),
+        Some(pair) => pair,
+        None => (table.to_vec(), 0),
     }
 }
 
-fn try_rewrite_gsub(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Option<Vec<u8>> {
+fn try_rewrite_gsub(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Option<(Vec<u8>, usize)> {
     let major = r_u16(table, 0)?;
     if major != 1 {
         return None;
@@ -1236,7 +1439,8 @@ fn try_rewrite_gsub(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Option<Vec<u
     let ll_offset = r_u16(table, 8)? as usize;
 
     // ---- Step 1: Rewrite LookupList ----
-    let (new_ll_bytes, lk_index_map) = rewrite_lookup_list(table, ll_offset, gid_remap);
+    let (new_ll_bytes, lk_index_map, dropped_context) =
+        rewrite_lookup_list(table, ll_offset, gid_remap);
 
     // ---- Step 2: Rewrite FeatureList ----
     let (new_fl_bytes, feat_index_map) = rewrite_feature_list(table, fl_offset, &lk_index_map);
@@ -1264,5 +1468,5 @@ fn try_rewrite_gsub(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Option<Vec<u
     out.extend_from_slice(&new_fl_bytes);
     out.extend_from_slice(&new_ll_bytes);
 
-    Some(out)
+    Some((out, dropped_context))
 }

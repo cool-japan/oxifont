@@ -171,43 +171,35 @@ fn find_best_for_text_with_ascii() {
 /// On macOS the `GENERIC_FAMILIES` table maps `"sans-serif"` to Arial /
 /// Helvetica. At least one of those should be installed; verify that
 /// `find_css()` (via `find_best_for_text`) can resolve the generic keyword.
+#[cfg(target_os = "macos")]
 #[test]
 fn css_generic_sans_serif_resolves_on_macos() {
-    #[cfg(not(target_os = "macos"))]
-    {
-        // This test is macOS-specific; skip on other platforms.
+    let db = FontDatabase::system().expect("FontDatabase::system() must not error");
+
+    if db.is_empty() {
+        // Minimal macOS container without fonts — skip gracefully.
         return;
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        let db = FontDatabase::system().expect("FontDatabase::system() must not error");
+    let query = FontQuery::new().family("sans-serif");
+    let found = db.find_best_for_text(&query, "Hello, world!");
 
-        if db.is_empty() {
-            // Minimal macOS container without fonts — skip gracefully.
-            return;
-        }
+    // macOS ships at least Helvetica Neue; if the catalog is non-empty
+    // and none of the sans-serif fallbacks resolved, that is unexpected.
+    // We issue the assertion only when we can confirm a known alias is present.
+    let has_known_alias = db.faces().iter().any(|f| {
+        let lo = f.family.to_lowercase();
+        lo.contains("helvetica") || lo.contains("arial")
+    });
 
-        let query = FontQuery::new().family("sans-serif");
-        let found = db.find_best_for_text(&query, "Hello, world!");
-
-        // macOS ships at least Helvetica Neue; if the catalog is non-empty
-        // and none of the sans-serif fallbacks resolved, that is unexpected.
-        // We issue the assertion only when we can confirm a known alias is present.
-        let has_known_alias = db.faces().iter().any(|f| {
-            let lo = f.family.to_lowercase();
-            lo.contains("helvetica") || lo.contains("arial")
-        });
-
-        if has_known_alias {
-            assert!(
-                found.is_some(),
-                "find_best_for_text() with 'sans-serif' must resolve when Helvetica or Arial is in the catalog"
-            );
-        }
-        // If neither alias is present (unusual but theoretically possible),
-        // we skip the assertion rather than fail the test suite.
+    if has_known_alias {
+        assert!(
+            found.is_some(),
+            "find_best_for_text() with 'sans-serif' must resolve when Helvetica or Arial is in the catalog"
+        );
     }
+    // If neither alias is present (unusual but theoretically possible),
+    // we skip the assertion rather than fail the test suite.
 }
 
 // ---------------------------------------------------------------------------

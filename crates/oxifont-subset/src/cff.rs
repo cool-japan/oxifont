@@ -23,10 +23,19 @@ enum CffError {
 /// Returns a new CFF table with only the charstrings for retained glyphs,
 /// or the original table verbatim if parsing fails.
 pub fn rewrite_cff(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Vec<u8> {
+    rewrite_cff_checked(table, gid_remap).0
+}
+
+/// As [`rewrite_cff`], also reporting whether the verbatim fallback was taken.
+///
+/// The fallback produces a table that is only correct under the **original**
+/// glyph numbering, so a caller that is renumbering glyphs has to know. See
+/// [`crate::SubsetStats::cff_charstrings_verbatim`].
+pub(crate) fn rewrite_cff_checked(table: &[u8], gid_remap: &HashMap<u16, u16>) -> (Vec<u8>, bool) {
     match rewrite_cff_inner(table, gid_remap) {
-        Ok(result) => result,
+        Ok(result) => (result, false),
         // On any parse error, CID detection, or unsupported structure → safe verbatim copy.
-        Err(_) => table.to_vec(),
+        Err(_) => (table.to_vec(), true),
     }
 }
 
@@ -1234,9 +1243,14 @@ fn patch_font_dict_private_offset_inner(fd_bytes: &[u8], delta: i64) -> Result<V
 /// Pass 2: relocate FDArray Private offsets by ΔT + ΔC → know ΔF.
 /// Final:  patch CharStrings, FDArray, and vstore offsets in Top DICT.
 pub fn rewrite_cff2(table: &[u8], gid_remap: &HashMap<u16, u16>) -> Vec<u8> {
+    rewrite_cff2_checked(table, gid_remap).0
+}
+
+/// As [`rewrite_cff2`], also reporting whether the verbatim fallback was taken.
+pub(crate) fn rewrite_cff2_checked(table: &[u8], gid_remap: &HashMap<u16, u16>) -> (Vec<u8>, bool) {
     match rewrite_cff2_inner(table, gid_remap) {
-        Ok(result) => result,
-        Err(_) => table.to_vec(),
+        Ok(result) => (result, false),
+        Err(_) => (table.to_vec(), true),
     }
 }
 

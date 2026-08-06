@@ -299,7 +299,7 @@ impl FaceInfo {
     /// Returns `true` when this face is a variable font with a `wght` axis
     /// whose range covers `weight`.
     pub fn covers_weight(&self, weight: u16) -> bool {
-        let wght_tag: [u8; 4] = [b'w', b'g', b'h', b't'];
+        let wght_tag: [u8; 4] = *b"wght";
         self.variable_axes.iter().any(|ax| {
             ax.tag == wght_tag
                 && f32::from(weight) >= ax.min_value

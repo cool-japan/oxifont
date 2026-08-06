@@ -676,8 +676,8 @@ impl<'a> Query<'a> {
         // The key is a tuple (locale_miss, axis_miss, oblique_miss) where
         // lower = better.  Tuple comparison is lexicographic, so locale is
         // evaluated first, then axis coverage, then oblique preference.
-        let ital_tag: [u8; 4] = [b'i', b't', b'a', b'l'];
-        let wdth_tag: [u8; 4] = [b'w', b'd', b't', b'h'];
+        let ital_tag: [u8; 4] = *b"ital";
+        let wdth_tag: [u8; 4] = *b"wdth";
         let wdth_pct = stretch_to_wdth_percent(self.stretch);
 
         let locale_lower = self.locale.as_deref().map(|s| s.to_lowercase());

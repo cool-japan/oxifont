@@ -14,10 +14,10 @@ The crate is **100% Pure Rust** and forbids `unsafe` code. The bundled font data
 ```toml
 [dependencies]
 # Latin/Greek/Cyrillic Sans + Serif + Mono + Italic
-oxifont-bundled = { version = "0.2.1", features = ["bundled-noto"] }
+oxifont-bundled = { version = "0.2.2", features = ["bundled-noto"] }
 
 # Add the Japanese accessor (supply the real font at build time — see below)
-oxifont-bundled = { version = "0.2.1", features = ["bundled-noto-cjk-jp"] }
+oxifont-bundled = { version = "0.2.2", features = ["bundled-noto-cjk-jp"] }
 ```
 
 With no feature flags the crate compiles but embeds no font bytes; the catalog

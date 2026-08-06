@@ -12,9 +12,9 @@ metrics, CMap, OS/2 and `name` table data, performing CSS Level 4 family/weight/
 Unicode codepoint set, encoding the result as WOFF1 or WOFF2, and executing TrueType hinting bytecode to grid-fit outlines via
 `oxifont-hinting`. Pixel rasterization, shaping, and layout remain **out of scope** by design — they belong in `oxitext`.
 
-## Status: 0.2.1
+## Status: 0.2.2 (2026-08-06)
 
-Full implementation across all M0–M7 milestones. 11 crates, ~34 500 Rust SLOC, 1020 tests passing with all features enabled (0 failures, 2 skipped) — 962 passing under default features.
+Full implementation across all M0–M7 milestones. 11 crates, ~23 200 Rust SLOC under `src/` (~43 400 including test code), 1165 tests passing with all features enabled (0 failures; 23 `#[ignore]`d tests that need Windows system fonts or an external fixture are skipped) — 1102 passing under default features, plus 123 doc tests.
 
 ## Feature Flags
 
@@ -26,11 +26,12 @@ Full implementation across all M0–M7 milestones. 11 crates, ~34 500 Rust SLOC,
 | `woff1` | no | WOFF1 decode and encode |
 | `woff2` | no | WOFF2 decode and encode |
 | `subset` | no | Glyph subsetting (`subset_font`, `SubsetOptions`) |
+| `hinting` | no | TrueType bytecode hinting (`hinting::HintingEngine`, `hinted_outline`) |
 | `bundled-noto` | no | Embedded Noto Sans/Serif Latin/Greek/Cyrillic |
-| `bundled-noto-cjk-jp` | no | Embedded Noto Sans JP |
-| `bundled-noto-cjk-kr` | no | Embedded Noto Sans KR |
-| `bundled-noto-cjk-sc` | no | Embedded Noto Sans SC |
-| `bundled-noto-cjk-tc` | no | Embedded Noto Sans TC |
+| `bundled-noto-cjk-jp` | no | Noto Sans JP — opt-in, build-time-supplied (not embedded; see [Bundling CJK fonts](crates/oxifont-bundled/README.md#bundling-cjk-fonts)) |
+| `bundled-noto-cjk-kr` | no | Noto Sans KR — opt-in, build-time-supplied (not embedded; see [Bundling CJK fonts](crates/oxifont-bundled/README.md#bundling-cjk-fonts)) |
+| `bundled-noto-cjk-sc` | no | Noto Sans SC — opt-in, build-time-supplied (not embedded; see [Bundling CJK fonts](crates/oxifont-bundled/README.md#bundling-cjk-fonts)) |
+| `bundled-noto-cjk-tc` | no | Noto Sans TC — opt-in, build-time-supplied (not embedded; see [Bundling CJK fonts](crates/oxifont-bundled/README.md#bundling-cjk-fonts)) |
 
 ## Quick Start
 
@@ -121,19 +122,20 @@ oxifont (facade)
 ├── oxifont-db             (CSS query engine)         [db feature]
 ├── oxifont-subset         (subsetter)                [subset feature]
 ├── oxifont-webfont        (WOFF1/WOFF2)              [woff1/woff2 features]
+├── oxifont-hinting        (TrueType hinting VM)      [hinting feature]
 └── oxifont-bundled        (embedded Noto fonts)      [bundled-* features]
 
 oxifont-adapter-native (CoreText / DirectWrite)       [depend on directly; native feature]
-oxifont-hinting (TrueType bytecode hinting VM)        [depend on directly; not re-exported]
 ```
 
 All default features use **zero FFI**. Native platform APIs (CoreText, DirectWrite)
 are exposed through `oxifont-adapter-native`, which is no longer re-exported by
 the facade crate; depend on it directly and enable its `native` feature. TrueType
 hinting bytecode execution is provided by `oxifont-hinting` (depends only on
-`oxifont-core`), which is likewise not re-exported by the facade — depend on it
-directly. `fontconfig` and `freetype` are permanently off-limits under any feature
-or adapter.
+`oxifont-core`); the facade re-exports it as the `oxifont::hinting` module (plus
+the `oxifont::hinted_outline` convenience function) behind the `hinting` feature,
+or it can still be depended on directly for the full engine API. `fontconfig` and
+`freetype` are permanently off-limits under any feature or adapter.
 
 ## Replaces
 

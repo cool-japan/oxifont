@@ -34,8 +34,8 @@ oxifont-webfont        = { path = "crates/oxifont-webfont",        version = "0.
 oxifont-subset         = { path = "crates/oxifont-subset",         version = "0.2.2" }
 oxifont-adapter-native = { path = "crates/oxifont-adapter-native", version = "0.2.2" }
 oxifont-bundled        = { path = "crates/oxifont-bundled",        version = "0.2.2" }
-oxiarc-deflate         = { version = "0.4.0" }
-oxiarc-brotli          = { version = "0.4.0" }
+oxiarc-deflate         = { version = "0.4.1" }
+oxiarc-brotli          = { version = "0.4.1" }
 
 core-foundation = { version = "0.10.1" }
 core-text       = { version = "22.0.0" }

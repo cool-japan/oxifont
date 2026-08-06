@@ -56,6 +56,6 @@ serde        = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json   = { version = "1.0.150" }
 quick-xml    = { package = "oxixml-quickxml-compat", version = "0.1.1" }
 memmap2      = { version = "0.9.11" }
-oxicode      = { version = "0.2.5", features = ["serde"] }
+oxicode      = { version = "0.2.6", features = ["serde"] }
 proptest     = { version = "1.11.0" }
 criterion      = { version = "0.8", default-features = false }
